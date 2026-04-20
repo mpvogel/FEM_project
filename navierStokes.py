@@ -21,10 +21,19 @@
 
 from dune.grid import cartesianDomain
 from dune.alugrid import aluConformGrid as leafGridView
-from dune.fem.space import lagrange
+from dune.fem.view import adaptiveLeafGridView
+from dune.fem.space import lagrange, composite
+from ufl import (TrialFunction,
+                 TestFunction,
+                 div, grad, inner, dx, ds, FacetNormal,
+                 nabla_grad, sym, Identity,
+                 as_vector, outer, dot)
+from dune.ufl import Constant
 
 domain = cartesianDomain([0,0], [1,1], [16,16])
 gridView = leafGridView(domain)
+gridView = adaptiveLeafGridView(gridView)
+dim = gridView.dimension
 
 # velocity space (vector valued)
 V = lagrange(gridView, order=2, dimRange=gridView.dimension)
@@ -32,6 +41,30 @@ V = lagrange(gridView, order=2, dimRange=gridView.dimension)
 # pressure space
 Q = lagrange(gridView, order=1 )
 
+compositeTaylorHoodSpace = composite(V,Q, componentNames=["velocity", "pressure"])
+trial_function= TrialFunction(compositeTaylorHoodSpace)
+test_function = TestFunction(compositeTaylorHoodSpace)
+
+rho = Constant(1, "rho")
+mu = Constant(1, "mu")
+
+def epsilon(u):
+    return sym(nabla_grad(u))
+
+def sigma(u, p):
+    return 2*mu*epsilon(u) - p*Identity(dim)
+
+u = as_vector([trial_function[0], trial_function[1]])  #2d velocity
+u_prelim = u.copy()
+v = as_vector([test_function[0], test_function[1]])
+p = trial_function[dim]  #1d pressure
+q = test_function[dim]
+n = FacetNormal(V)
+
+f = 
+
+# IPCS weak UFL:
+form_1 = rho * dot(u_prelim - u, v) * dx + inner(sigma(u_prelim, p), epsilon(v)) * dx - dot(mu * dot(grad(u),n) - dot(p,n), v) * ds - dot(f,v) * dx
 
 
 # %% [markdown]
