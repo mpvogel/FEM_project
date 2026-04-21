@@ -47,6 +47,7 @@ test_function = TestFunction(compositeTaylorHoodSpace)
 
 rho = Constant(1, "rho")
 mu = Constant(1, "mu")
+dt = Constant(0.01, "dt")
 
 def epsilon(u):
     return sym(nabla_grad(u))
@@ -61,10 +62,43 @@ p = trial_function[dim]  #1d pressure
 q = test_function[dim]
 n = FacetNormal(V)
 
-f = 
+f = 0
 
 # IPCS weak UFL:
-form_1 = rho * dot(u_prelim - u, v) * dx + inner(sigma(u_prelim, p), epsilon(v)) * dx - dot(mu * dot(grad(u),n) - dot(p,n), v) * ds - dot(f,v) * dx
+form_1 = rho * dot(u_prelim - u, v) / dt * dx + inner(sigma(u_prelim, p), epsilon(v)) * dx - dot(mu * dot(grad(u),n) - dot(p,n), v) * ds - dot(f,v) * dx - rho * dot(dot(u, grad(u)), v) * dx
+
+
+solverParameters ={
+    "nonlinear.tolerance": 1e-10,
+    "nonlinear.verbose": False,
+    "linear.tolerance": 1e-14,
+    "linear.preconditioning.method": "ilu",
+    "linear.verbose": False,
+    "linear.maxiterations": 1000,
+}
+
+scheme_1 = solutionScheme(
+    [form_1 == 0, *dbc],
+    parameters=solverParameters,
+    solver= ("istl", "gmres"),
+)
+
+
+i = 0
+while t < T:
+    # overwrite previous value
+    u_prev.assign(u_h)  # u^n
+
+    # Solve for new (u,eta)
+    info = scheme_1.solve(target=u_prelim_h)
+
+    info2 = scheme_2.solve(target=p_h)
+
+
+
+    # increment time
+    t += tau.value
+    i += 1
 
 
 # %% [markdown]
