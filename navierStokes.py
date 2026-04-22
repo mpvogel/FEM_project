@@ -108,9 +108,9 @@ f = as_vector([fx, fy])  # right-hand side
 form_1 = (
     rho * dot(u - u_prev, v) / dt * dx
     + inner(sigma(u, p_prev), epsilon(v)) * dx
-    - dot(mu * dot(grad(u), n) - p_prev * n, v) * ds
+    - dot(mu * dot(nabla_grad(u), n) - p_prev * n, v) * ds
     - dot(f, v) * dx
-    + rho * dot(dot(u_prev, grad(u_prev)), v) * dx
+    + rho * dot(dot(u_prev, nabla_grad(u_prev)), v) * dx
 )
 # solve after u which has the role of u_n+1/2
 
