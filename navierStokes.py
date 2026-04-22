@@ -21,7 +21,7 @@
 
 from dune.grid import cartesianDomain
 from dune.alugrid import aluConformGrid as leafGridView
-from dune.fem import integrate
+from dune.fem import integrate, threading
 from dune.fem.view import adaptiveLeafGridView
 from dune.fem.space import lagrange
 from dune.fem.scheme import galerkin as solutionScheme
@@ -44,98 +44,31 @@ from ufl import (
     dot,
 )
 from dune.ufl import Constant, DirichletBC
+from tqdm import tqdm
+import pygmsh
 
-L = 1
-H = 1
-T = 10
+L = 1.0
+H = 1.0
+T = 10.0
+DT = 0.02
+STRUCTURED_CELLS = [16, 16]
+UNSTRUCTURED_MESH_SIZE = 0.08
+CYLINDER_L = 2.2
+CYLINDER_H = 0.41
+CYLINDER_CENTER = (0.2, 0.2)
+CYLINDER_RADIUS = 0.05
+CYLINDER_T = 5.0
+CYLINDER_DT = CYLINDER_T / 1000
+CYLINDER_MESH_SIZE = 0.025
+INFLOW_RAMP_TIME = 1.0
 
-domain = cartesianDomain([0, 0], [L, H], [16, 16])
-gridView = leafGridView(domain)
-gridView = adaptiveLeafGridView(gridView)
-dim = gridView.dimension
+# Choose which exercise blocks are executed when running this file.
+# Valid entries: "A", "B", "C". Example: RUN_TASKS = ["A", "C"]
+RUN_TASKS = ["C"]
 
-# velocity space (vector valued)
-velocitySpace = lagrange(gridView, order=2, dimRange=gridView.dimension)
-
-# pressure space
-pressureSpace = lagrange(gridView, order=1)
-
-u = TrialFunction(velocitySpace)
-v = TestFunction(velocitySpace)
-p = TrialFunction(pressureSpace)
-q = TestFunction(pressureSpace)
-
-rho = Constant(1, "rho")
-mu = Constant(1, "mu")
-dt = Constant(0.02, "dt")
 steady_tolerance = 1e-8
-plot_results = False
-
-
-def epsilon(u):
-    return sym(nabla_grad(u))
-
-
-def sigma(u, p):
-    return 2 * mu * epsilon(u) - p * Identity(dim)
-
-
-x = SpatialCoordinate(velocitySpace)
-solution_u = as_vector([4 * x[1] * (1 - x[1]), 0])
-solution_p = 8 * (1 - x[0])
-
-
-
-u_prelim = velocitySpace.function(name="u_prelim")
-u_prev = velocitySpace.function(name="u_prev")
-# u_prev_fun.assign(0)  # initial condition: u=0 at time t=0
-u_h = velocitySpace.function(name="u_h")
-
-p_h = pressureSpace.function(name="p_h")
-p_prev = pressureSpace.interpolate(lambda x: 8 * (1 - x[0]), name="p_prev")
-
-
-
-n = FacetNormal(velocitySpace)
-
-fx = Constant(0, "fx")
-fy = Constant(0, "fy")
-f = as_vector([fx, fy])  # right-hand side
-
-# IPCS weak UFL:
-form_1 = (
-    rho * dot(u - u_prev, v) / dt * dx
-    + inner(sigma(u, p_prev), epsilon(v)) * dx
-    - dot(mu * dot(nabla_grad(u), n) - p_prev * n, v) * ds
-    - dot(f, v) * dx
-    + rho * dot(dot(u_prev, nabla_grad(u_prev)), v) * dx
-)
-# solve after u which has the role of u_n+1/2
-
-form_2 = (
-    dot(grad(p), grad(q)) * dx
-    - dot(grad(p_prev), grad(q)) * dx
-    + 1 / dt * div(u_prelim) * q * dx
-)
-
-form_3 = dot(u, v) * dx - dot(u_prelim, v) * dx + dt * dot(grad(p_h - p_prev), v) * dx
-
-
-dbc_velocity_1 = DirichletBC(
-    velocitySpace, [0, 0], abs(x[1]) < 1e-10
-)  # zero velocity at bottom
-dbc_velocity_2 = DirichletBC(
-    velocitySpace, [0, 0], abs(x[1] - H) < 1e-10
-)  # zero velocity at top
-dbc_pressure_1 = DirichletBC(
-    pressureSpace, 8, abs(x[0]) < 1e-10
-)  # pressure at left boundary
-dbc_pressure_2 = DirichletBC(
-    pressureSpace, 0, abs(x[0] - L) < 1e-10
-)  # pressure at right boundary
-
-dbc_pressure = [dbc_pressure_1, dbc_pressure_2]
-dbc_velocity = [dbc_velocity_1, dbc_velocity_2]
+plot_results = True
+threading.use = 1
 
 
 solverParameters = {
@@ -147,120 +80,376 @@ solverParameters = {
     "linear.maxiterations": 1000,
 }
 
-scheme_1 = solutionScheme(
-    [form_1 == 0, *dbc_velocity],
-    parameters=solverParameters,
-    solver=("istl", "gmres"),
-)
 
-scheme_2 = solutionScheme(
-    [form_2 == 0, *dbc_pressure],
-    parameters=solverParameters,
-    solver=("istl", "gmres"),
-)
-
-scheme_3 = solutionScheme(
-    [form_3 == 0, *dbc_velocity],
-    parameters=solverParameters,
-    solver=("istl", "gmres"),
-)
+def epsilon(u):
+    return sym(nabla_grad(u))
 
 
-t = 0
-total_steps = max(int(round(T / dt.value)), 1)
-steady_time = None
-error_history = []
-for step in range(1, total_steps + 1):
+def solve_poiseuille_on_grid(gridView, label, L=1.0, H=1.0, T=10.0, dt_value=0.02):
+    dim = gridView.dimension
 
-    progress = min(step / total_steps, 1.0)
-    bar_width = 40
-    filled = int(bar_width * progress)
+    velocitySpace = lagrange(gridView, order=2, dimRange=dim)
+    pressureSpace = lagrange(gridView, order=1)
+
+    u = TrialFunction(velocitySpace)
+    v = TestFunction(velocitySpace)
+    p = TrialFunction(pressureSpace)
+    q = TestFunction(pressureSpace)
+
+    rho = Constant(1, "rho")
+    mu = Constant(1, "mu")
+    dt = Constant(dt_value, "dt")
+
+    def local_sigma(u, p):
+        return 2 * mu * epsilon(u) - p * Identity(dim)
+
+    x = SpatialCoordinate(velocitySpace)
+    solution_u = as_vector([4 * x[1] * (1 - x[1]), 0])
+    solution_p = 8 * (1 - x[0])
+
+    name = label.lower().replace(" ", "_")
+    u_prelim = velocitySpace.function(name=f"{name}_u_prelim")
+    u_prev = velocitySpace.function(name=f"{name}_u_prev")
+    u_h = velocitySpace.function(name=f"{name}_u_h")
+
+    p_h = pressureSpace.function(name=f"{name}_p_h")
+    p_prev = pressureSpace.interpolate(lambda x: 8 * (1 - x[0]), name=f"{name}_p_prev")
+
+    n = FacetNormal(velocitySpace)
+    f = as_vector([Constant(0, "fx"), Constant(0, "fy")])
+
+    form_1 = (
+        rho * dot(u - u_prev, v) / dt * dx
+        + inner(local_sigma(u, p_prev), epsilon(v)) * dx
+        - dot(mu * dot(nabla_grad(u), n) - p_prev * n, v) * ds
+        - dot(f, v) * dx
+        + rho * dot(dot(u_prev, nabla_grad(u_prev)), v) * dx
+    )
+
+    form_2 = (
+        dot(grad(p), grad(q)) * dx
+        - dot(grad(p_prev), grad(q)) * dx
+        + 1 / dt * div(u_prelim) * q * dx
+    )
+
+    form_3 = (
+        dot(u, v) * dx
+        - dot(u_prelim, v) * dx
+        + dt * dot(grad(p_h - p_prev), v) * dx
+    )
+
+    dbc_velocity = [
+        DirichletBC(velocitySpace, [0, 0], abs(x[1]) < 1e-10),
+        DirichletBC(velocitySpace, [0, 0], abs(x[1] - H) < 1e-10),
+    ]
+    dbc_pressure = [
+        DirichletBC(pressureSpace, 8, abs(x[0]) < 1e-10),
+        DirichletBC(pressureSpace, 0, abs(x[0] - L) < 1e-10),
+    ]
+
+    scheme_1 = solutionScheme(
+        [form_1 == 0, *dbc_velocity],
+        parameters=solverParameters,
+        solver=("istl", "gmres"),
+    )
+    scheme_2 = solutionScheme(
+        [form_2 == 0, *dbc_pressure],
+        parameters=solverParameters,
+        solver=("istl", "gmres"),
+    )
+    scheme_3 = solutionScheme(
+        [form_3 == 0, *dbc_velocity],
+        parameters=solverParameters,
+        solver=("istl", "gmres"),
+    )
+
+    print(f"\n{label}: {gridView.size(0)} elements")
+    t = 0
+    total_steps = max(int(round(T / dt.value)), 1)
+    steady_time = None
+    error_history = []
+    for step in tqdm(range(1, total_steps + 1), desc=label):
+        scheme_1.solve(target=u_prelim)
+        scheme_2.solve(target=p_h)
+        scheme_3.solve(target=u_h)
+
+        velocity_l2_error = sqrt(
+            integrate(
+                inner(u_h - solution_u, u_h - solution_u),
+                gridView=gridView,
+                order=6,
+            )
+        )
+        pressure_l2_error = sqrt(
+            integrate(
+                (p_h - solution_p) ** 2,
+                gridView=gridView,
+                order=4,
+            )
+        )
+        velocity_update_l2 = sqrt(
+            integrate(
+                inner(u_h - u_prev, u_h - u_prev),
+                gridView=gridView,
+                order=6,
+            )
+        )
+        pressure_update_l2 = sqrt(
+            integrate(
+                (p_h - p_prev) ** 2,
+                gridView=gridView,
+                order=4,
+            )
+        )
+        temporal_update_l2 = sqrt(velocity_update_l2**2 + pressure_update_l2**2)
+        error_history.append(
+            (
+                t + dt.value,
+                velocity_l2_error,
+                pressure_l2_error,
+                temporal_update_l2,
+            )
+        )
+        if steady_time is None and temporal_update_l2 < steady_tolerance:
+            steady_time = t + dt.value
+
+        p_prev.assign(p_h)
+        u_prev.assign(u_h)
+        t += dt.value
+
+    final_time, final_u_error, final_p_error, final_update = error_history[-1]
     print(
-        f"\r[{('#' * filled).ljust(bar_width, '-')}] "
-        f"{100 * progress:6.2f}%  step {step}/{total_steps}",
-        end="",
-        flush=True,
+        f"{label}: Final L2 errors at "
+        f"t={final_time:.4f}: ||u_h-u_exact||_L2={final_u_error:.6e}, "
+        f"||p_h-p_exact||_L2={final_p_error:.6e}"
     )
-    if step == total_steps:
-        print()
-
-
-    # Solve for new (u,eta)
-    info = scheme_1.solve(target=u_prelim)
-
-    info2 = scheme_2.solve(target=p_h)
-
-    info3 = scheme_3.solve(target=u_h)
-
-    velocity_l2_error = sqrt(
-        integrate(
-            inner(u_h - solution_u, u_h - solution_u),
-            gridView=gridView,
-            order=6,
+    if steady_time is None:
+        print(
+            f"{label}: Steady state criterion not reached: "
+            f"combined temporal update remained {final_update:.6e} "
+            f"> {steady_tolerance:.1e} at T={T}."
         )
-    )
-    pressure_l2_error = sqrt(
-        integrate(
-            (p_h - solution_p) ** 2,
-            gridView=gridView,
-            order=4,
+    else:
+        print(
+            f"{label}: Steady state reached at "
+            f"t={steady_time:.4f} with criterion "
+            f"sqrt(||u^n-u^(n-1)||_L2^2 + ||p^n-p^(n-1)||_L2^2) "
+            f"< {steady_tolerance:.1e}."
         )
-    )
-    velocity_update_l2 = sqrt(
-        integrate(
-            inner(u_h - u_prev, u_h - u_prev),
-            gridView=gridView,
-            order=6,
+
+    if plot_results:
+        u_h.plot()
+        p_h.plot()
+
+    return {
+        "gridView": gridView,
+        "u_h": u_h,
+        "p_h": p_h,
+        "error_history": error_history,
+        "steady_time": steady_time,
+    }
+
+
+def run_task_a():
+    domain = cartesianDomain([0, 0], [L, H], STRUCTURED_CELLS)
+    gridView = leafGridView(domain)
+    gridView = adaptiveLeafGridView(gridView)
+    return solve_poiseuille_on_grid(gridView, "Task A structured", L=L, H=H, T=T, dt_value=DT)
+
+
+def make_unstructured_channel_domain(mesh_size=UNSTRUCTURED_MESH_SIZE):
+    with pygmsh.occ.Geometry() as geom:
+        geom.add_rectangle([0, 0, 0], L, H, mesh_size=mesh_size)
+        mesh = geom.generate_mesh()
+        points, cells = mesh.points, mesh.cells_dict
+        domain = {
+            "vertices": points[:, :2].astype(float),
+            "simplices": cells["triangle"].astype(int),
+        }
+    return domain
+
+
+def run_task_b():
+    domain = make_unstructured_channel_domain()
+    print("Task B unstructured mesh elements:", len(domain["simplices"]))
+    gridView = leafGridView(domain, dimgrid=2)
+    gridView = adaptiveLeafGridView(gridView)
+    if plot_results:
+        gridView.plot()
+    return solve_poiseuille_on_grid(gridView, "Task B unstructured", L=L, H=H, T=T, dt_value=DT)
+
+
+def make_cylinder_domain(mesh_size=CYLINDER_MESH_SIZE, coarse=False):
+    outside_size = 0.08 if coarse else mesh_size
+
+    def local_size(x, y):
+        radius2 = (x - CYLINDER_CENTER[0]) ** 2 + (y - CYLINDER_CENTER[1]) ** 2
+        return min(0.01 + 0.6 * radius2, outside_size)
+
+    with pygmsh.occ.Geometry() as geom:
+        geom.set_mesh_size_callback(
+            lambda dim, tag, x, y, z, lc: local_size(x, y)
         )
-    )
-    pressure_update_l2 = sqrt(
-        integrate(
-            (p_h - p_prev) ** 2,
-            gridView=gridView,
-            order=4,
+        rectangle = geom.add_rectangle([0, 0, 0], CYLINDER_L, CYLINDER_H)
+        cylinder = geom.add_disk(
+            [CYLINDER_CENTER[0], CYLINDER_CENTER[1], 0.0],
+            CYLINDER_RADIUS,
         )
+        geom.boolean_difference(rectangle, cylinder)
+        mesh = geom.generate_mesh()
+        points, cells = mesh.points, mesh.cells_dict
+        domain = {
+            "vertices": points[:, :2].astype(float),
+            "simplices": cells["triangle"].astype(int),
+        }
+    return domain
+
+
+def set_constant_value(constant, value):
+    try:
+        constant.value = value
+    except AttributeError:
+        constant.assign(value)
+
+
+def solve_cylinder_flow(
+    gridView,
+    label="Task C cylinder",
+    T=CYLINDER_T,
+    dt_value=CYLINDER_DT,
+    ramp_time=INFLOW_RAMP_TIME,
+):
+    dim = gridView.dimension
+    velocitySpace = lagrange(gridView, order=2, dimRange=dim)
+    pressureSpace = lagrange(gridView, order=1)
+
+    u = TrialFunction(velocitySpace)
+    v = TestFunction(velocitySpace)
+    p = TrialFunction(pressureSpace)
+    q = TestFunction(pressureSpace)
+
+    rho = Constant(1, "rho")
+    mu = Constant(1e-3, "mu")
+    dt = Constant(dt_value, "dt")
+    inflow_ramp = Constant(0.0, "inflow_ramp")
+
+    def local_sigma(u, p):
+        return 2 * mu * epsilon(u) - p * Identity(dim)
+
+    x = SpatialCoordinate(velocitySpace)
+    inflow_profile = as_vector(
+        [inflow_ramp * 6 * x[1] * (CYLINDER_H - x[1]) / CYLINDER_H**2, 0]
     )
-    temporal_update_l2 = sqrt(velocity_update_l2**2 + pressure_update_l2**2)
-    error_history.append(
-        (
-            t + dt.value,
-            velocity_l2_error,
-            pressure_l2_error,
-            temporal_update_l2,
+
+    u_prelim = velocitySpace.function(name="task_c_u_prelim")
+    u_prev = velocitySpace.function(name="task_c_u_prev")
+    u_h = velocitySpace.function(name="task_c_u_h")
+
+    p_h = pressureSpace.function(name="task_c_p_h")
+    p_prev = pressureSpace.function(name="task_c_p_prev")
+
+    f = as_vector([Constant(0, "fx"), Constant(0, "fy")])
+
+    form_1 = (
+        rho * dot(u - u_prev, v) / dt * dx
+        + inner(local_sigma(u, p_prev), epsilon(v)) * dx
+        - dot(f, v) * dx
+        + rho * dot(dot(u_prev, nabla_grad(u_prev)), v) * dx
+    )
+
+    form_2 = (
+        dot(grad(p), grad(q)) * dx
+        - dot(grad(p_prev), grad(q)) * dx
+        + 1 / dt * div(u_prelim) * q * dx
+    )
+
+    form_3 = (
+        dot(u, v) * dx
+        - dot(u_prelim, v) * dx
+        + dt * dot(grad(p_h - p_prev), v) * dx
+    )
+
+    cylinder_boundary = (
+        abs(
+            (x[0] - CYLINDER_CENTER[0]) ** 2
+            + (x[1] - CYLINDER_CENTER[1]) ** 2
+            - CYLINDER_RADIUS**2
         )
+        < 1e-5
     )
-    if steady_time is None and temporal_update_l2 < steady_tolerance:
-        steady_time = t + dt.value
+    dbc_velocity = [
+        DirichletBC(velocitySpace, inflow_profile, abs(x[0]) < 1e-10),
+        DirichletBC(velocitySpace, [0, 0], abs(x[1]) < 1e-10),
+        DirichletBC(velocitySpace, [0, 0], abs(x[1] - CYLINDER_H) < 1e-10),
+        DirichletBC(velocitySpace, [0, 0], cylinder_boundary),
+    ]
+    dbc_pressure = [
+        DirichletBC(pressureSpace, 0, abs(x[0] - CYLINDER_L) < 1e-10),
+    ]
 
-    p_prev.assign(p_h)
-    u_prev.assign(u_h)
-
-    # increment time
-    t += dt.value
-
-final_time, final_u_error, final_p_error, final_update = error_history[-1]
-print(
-    "Final L2 errors at "
-    f"t={final_time:.4f}: ||u_h-u_exact||_L2={final_u_error:.6e}, "
-    f"||p_h-p_exact||_L2={final_p_error:.6e}"
-)
-if steady_time is None:
-    print(
-        "Steady state criterion not reached: "
-        f"combined temporal update remained {final_update:.6e} "
-        f"> {steady_tolerance:.1e} at T={T}."
+    scheme_1 = solutionScheme(
+        [form_1 == 0, *dbc_velocity],
+        parameters=solverParameters,
+        solver=("istl", "gmres"),
     )
-else:
-    print(
-        "Steady state reached at "
-        f"t={steady_time:.4f} with criterion "
-        f"sqrt(||u^n-u^(n-1)||_L2^2 + ||p^n-p^(n-1)||_L2^2) "
-        f"< {steady_tolerance:.1e}."
+    scheme_2 = solutionScheme(
+        [form_2 == 0, *dbc_pressure],
+        parameters=solverParameters,
+        solver=("istl", "gmres"),
+    )
+    scheme_3 = solutionScheme(
+        [form_3 == 0, *dbc_velocity],
+        parameters=solverParameters,
+        solver=("istl", "gmres"),
     )
 
-if plot_results:
-    u_h.plot()
-    p_h.plot()
+    print(f"\n{label}: {gridView.size(0)} elements")
+    total_steps = max(int(round(T / dt.value)), 1)
+    output_every = max(total_steps // 20, 1)
+    t = 0
+    for step in tqdm(range(1, total_steps + 1), desc=label):
+        next_t = t + dt.value
+        set_constant_value(inflow_ramp, min(next_t / ramp_time, 1.0))
+
+        scheme_1.solve(target=u_prelim)
+        scheme_2.solve(target=p_h)
+        scheme_3.solve(target=u_h)
+
+        p_prev.assign(p_h)
+        u_prev.assign(u_h)
+        t = next_t
+
+        if plot_results and (step % output_every == 0 or step == total_steps):
+            u_h.plot()
+            p_h.plot()
+
+    print(f"{label}: finished at t={t:.4f} with dt={dt.value:.2e}.")
+    return {"gridView": gridView, "u_h": u_h, "p_h": p_h}
+
+
+def run_task_c():
+    domain = make_cylinder_domain()
+    print("Task C cylinder mesh elements:", len(domain["simplices"]))
+    gridView = leafGridView(domain, dimgrid=2, lbMethod=14)
+    gridView = adaptiveLeafGridView(gridView)
+    if plot_results:
+        gridView.plot()
+    return solve_cylinder_flow(gridView)
+
+
+def main():
+    results = {}
+    for task in RUN_TASKS:
+        task = task.upper()
+        if task == "A":
+            results["A"] = run_task_a()
+        elif task == "B":
+            results["B"] = run_task_b()
+        elif task == "C":
+            results["C"] = run_task_c()
+        else:
+            raise ValueError(f"Unknown task {task!r}; use 'A', 'B', and/or 'C'.")
+    return results
 
 # %% [markdown]
 # time step by solving __Step 1__, __Step 2__, and then __Step
@@ -324,24 +513,8 @@ if plot_results:
 
 # %%
 
-import pygmsh
-
-with pygmsh.occ.Geometry() as geom:
-    # add rectangle with length 1 in x and 1 in y direction.
-    L, H = 1.0, 1.0
-    rectangle = geom.add_rectangle([0, 0, 0], L, H)
-    mesh = geom.generate_mesh()
-    points, cells = mesh.points, mesh.cells_dict
-    # convert to dictionary understood by DUNE
-    domain = {
-        "vertices": points[:, :2].astype(float),
-        "simplices": cells["triangle"].astype(int),
-    }
-    print("Number of elements: ", len(domain["simplices"]))
-
-gridView = leafGridView(domain, dimgrid=2)
-if plot_results:
-    gridView.plot()
+if __name__ == "__main__":
+    results = main()
 
 # %% [markdown]
 # # Task C
@@ -439,12 +612,6 @@ if plot_results:
 # of the Maths department. Run speed-up tests on that server. For
 # meaningful results you have to control the number of threads used
 # for linear algebra, e.g.
-#
-
-# %%
-from dune.fem import threading
-
-threading.use = 1
 #
 
 # %% [markdown]
