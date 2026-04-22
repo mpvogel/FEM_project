@@ -19,7 +19,7 @@
 
 # %%
 
-from dune.grid import cartesianDomain
+from dune.grid import cartesianDomain, gridFunction
 from dune.alugrid import aluConformGrid as leafGridView
 from dune.fem.view import adaptiveLeafGridView
 from dune.fem.space import lagrange
@@ -43,9 +43,9 @@ from ufl import (
 )
 from dune.ufl import Constant, DirichletBC
 
-L = 10
+L = 1
 H = 1
-T = 1
+T = 2
 
 domain = cartesianDomain([0, 0], [L, H], [16, 16])
 gridView = leafGridView(domain)
@@ -76,13 +76,27 @@ def sigma(u, p):
     return 2 * mu * epsilon(u) - p * Identity(dim)
 
 
+@gridFunction(gridView, order=2)
+def solution_u(x):
+    return as_vector([4 * x[1] * (1 - x[1]), 0])
+
+
+@gridFunction(gridView, order=1)
+def solution_p(x):
+    return 8 * (1 - x[0])
+
+
+
+
 u_prelim = velocitySpace.function(name="u_prelim")
 u_prev = velocitySpace.function(name="u_prev")
 # u_prev_fun.assign(0)  # initial condition: u=0 at time t=0
 u_h = velocitySpace.function(name="u_h")
 
 p_h = pressureSpace.function(name="p_h")
-p_prev = pressureSpace.function(name="p_prev")
+p_prev = pressureSpace.interpolate(lambda x: 8 * (1 - x[0]), name="p_prev")
+
+
 
 n = FacetNormal(velocitySpace)
 
@@ -110,7 +124,7 @@ form_3 = dot(u, v) * dx - dot(u_prelim, v) * dx + dt * dot(grad(p_h - p_prev), v
 
 
 x = SpatialCoordinate(velocitySpace)
-x_p = SpatialCoordinate(pressureSpace)
+
 dbc_velocity_1 = DirichletBC(
     velocitySpace, [0, 0], abs(x[1]) < 1e-10
 )  # zero velocity at bottom
@@ -118,10 +132,10 @@ dbc_velocity_2 = DirichletBC(
     velocitySpace, [0, 0], abs(x[1] - H) < 1e-10
 )  # zero velocity at top
 dbc_pressure_1 = DirichletBC(
-    pressureSpace, 8, abs(x_p[0]) < 1e-10
+    pressureSpace, 8, abs(x[0]) < 1e-10
 )  # pressure at left boundary
 dbc_pressure_2 = DirichletBC(
-    pressureSpace, 0, abs(x_p[0] - L) < 1e-10
+    pressureSpace, 0, abs(x[0] - L) < 1e-10
 )  # pressure at right boundary
 
 dbc_pressure = [dbc_pressure_1, dbc_pressure_2]
@@ -159,6 +173,22 @@ scheme_3 = solutionScheme(
 i = 0
 t = 0
 while t < T:
+
+    total_steps = max(int(round(T / dt.value)), 1)
+    step = i + 1
+    progress = min(step / total_steps, 1.0)
+    bar_width = 40
+    filled = int(bar_width * progress)
+    print(
+        f"\r[{('#' * filled).ljust(bar_width, '-')}] "
+        f"{100 * progress:6.2f}%  step {step}/{total_steps}",
+        end="",
+        flush=True,
+    )
+    if step == total_steps:
+        print()
+
+
     # Solve for new (u,eta)
     info = scheme_1.solve(target=u_prelim)
 
