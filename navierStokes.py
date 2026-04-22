@@ -19,11 +19,13 @@
 
 # %%
 
-from dune.grid import cartesianDomain, gridFunction
+from dune.grid import cartesianDomain
 from dune.alugrid import aluConformGrid as leafGridView
+from dune.fem import integrate
 from dune.fem.view import adaptiveLeafGridView
 from dune.fem.space import lagrange
 from dune.fem.scheme import galerkin as solutionScheme
+from math import sqrt
 from ufl import (
     TrialFunction,
     TestFunction,
@@ -45,7 +47,7 @@ from dune.ufl import Constant, DirichletBC
 
 L = 1
 H = 1
-T = 2
+T = 10
 
 domain = cartesianDomain([0, 0], [L, H], [16, 16])
 gridView = leafGridView(domain)
@@ -66,6 +68,8 @@ q = TestFunction(pressureSpace)
 rho = Constant(1, "rho")
 mu = Constant(1, "mu")
 dt = Constant(0.02, "dt")
+steady_tolerance = 1e-8
+plot_results = False
 
 
 def epsilon(u):
@@ -76,15 +80,9 @@ def sigma(u, p):
     return 2 * mu * epsilon(u) - p * Identity(dim)
 
 
-@gridFunction(gridView, order=2)
-def solution_u(x):
-    return as_vector([4 * x[1] * (1 - x[1]), 0])
-
-
-@gridFunction(gridView, order=1)
-def solution_p(x):
-    return 8 * (1 - x[0])
-
+x = SpatialCoordinate(velocitySpace)
+solution_u = as_vector([4 * x[1] * (1 - x[1]), 0])
+solution_p = 8 * (1 - x[0])
 
 
 
@@ -122,8 +120,6 @@ form_2 = (
 
 form_3 = dot(u, v) * dx - dot(u_prelim, v) * dx + dt * dot(grad(p_h - p_prev), v) * dx
 
-
-x = SpatialCoordinate(velocitySpace)
 
 dbc_velocity_1 = DirichletBC(
     velocitySpace, [0, 0], abs(x[1]) < 1e-10
@@ -170,12 +166,12 @@ scheme_3 = solutionScheme(
 )
 
 
-i = 0
 t = 0
-while t < T:
+total_steps = max(int(round(T / dt.value)), 1)
+steady_time = None
+error_history = []
+for step in range(1, total_steps + 1):
 
-    total_steps = max(int(round(T / dt.value)), 1)
-    step = i + 1
     progress = min(step / total_steps, 1.0)
     bar_width = 40
     filled = int(bar_width * progress)
@@ -195,15 +191,76 @@ while t < T:
     info2 = scheme_2.solve(target=p_h)
 
     info3 = scheme_3.solve(target=u_h)
+
+    velocity_l2_error = sqrt(
+        integrate(
+            inner(u_h - solution_u, u_h - solution_u),
+            gridView=gridView,
+            order=6,
+        )
+    )
+    pressure_l2_error = sqrt(
+        integrate(
+            (p_h - solution_p) ** 2,
+            gridView=gridView,
+            order=4,
+        )
+    )
+    velocity_update_l2 = sqrt(
+        integrate(
+            inner(u_h - u_prev, u_h - u_prev),
+            gridView=gridView,
+            order=6,
+        )
+    )
+    pressure_update_l2 = sqrt(
+        integrate(
+            (p_h - p_prev) ** 2,
+            gridView=gridView,
+            order=4,
+        )
+    )
+    temporal_update_l2 = sqrt(velocity_update_l2**2 + pressure_update_l2**2)
+    error_history.append(
+        (
+            t + dt.value,
+            velocity_l2_error,
+            pressure_l2_error,
+            temporal_update_l2,
+        )
+    )
+    if steady_time is None and temporal_update_l2 < steady_tolerance:
+        steady_time = t + dt.value
+
     p_prev.assign(p_h)
     u_prev.assign(u_h)
 
     # increment time
     t += dt.value
-    i += 1
 
-u_h.plot()
-p_h.plot()
+final_time, final_u_error, final_p_error, final_update = error_history[-1]
+print(
+    "Final L2 errors at "
+    f"t={final_time:.4f}: ||u_h-u_exact||_L2={final_u_error:.6e}, "
+    f"||p_h-p_exact||_L2={final_p_error:.6e}"
+)
+if steady_time is None:
+    print(
+        "Steady state criterion not reached: "
+        f"combined temporal update remained {final_update:.6e} "
+        f"> {steady_tolerance:.1e} at T={T}."
+    )
+else:
+    print(
+        "Steady state reached at "
+        f"t={steady_time:.4f} with criterion "
+        f"sqrt(||u^n-u^(n-1)||_L2^2 + ||p^n-p^(n-1)||_L2^2) "
+        f"< {steady_tolerance:.1e}."
+    )
+
+if plot_results:
+    u_h.plot()
+    p_h.plot()
 
 # %% [markdown]
 # time step by solving __Step 1__, __Step 2__, and then __Step
@@ -283,7 +340,8 @@ with pygmsh.occ.Geometry() as geom:
     print("Number of elements: ", len(domain["simplices"]))
 
 gridView = leafGridView(domain, dimgrid=2)
-gridView.plot()
+if plot_results:
+    gridView.plot()
 
 # %% [markdown]
 # # Task C
