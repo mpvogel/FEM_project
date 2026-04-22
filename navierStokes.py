@@ -76,17 +76,14 @@ def sigma(u, p):
     return 2 * mu * epsilon(u) - p * Identity(dim)
 
 
-u_prelim_fun = velocitySpace.function(name="u_prelim")
-u_prev_fun = velocitySpace.function(name="u_prev")
+u_prelim = velocitySpace.function(name="u_prelim")
+u_prev = velocitySpace.function(name="u_prev")
 # u_prev_fun.assign(0)  # initial condition: u=0 at time t=0
-u_h_fun = velocitySpace.function(name="u_h")
-u_prelim = u_prelim_fun
-u_prev = u_prev_fun
-u_h = u_h_fun
-p_h_fun = pressureSpace.function(name="p_h")
-p_prev_fun = pressureSpace.function(name="p_prev")
-p_h = p_h_fun
-p_prev = p_prev_fun
+u_h = velocitySpace.function(name="u_h")
+
+p_h = pressureSpace.function(name="p_h")
+p_prev = pressureSpace.function(name="p_prev")
+
 n = FacetNormal(velocitySpace)
 
 fx = Constant(0, "fx")
@@ -163,20 +160,20 @@ i = 0
 t = 0
 while t < T:
     # Solve for new (u,eta)
-    info = scheme_1.solve(target=u_prelim_fun)
+    info = scheme_1.solve(target=u_prelim)
 
-    info2 = scheme_2.solve(target=p_h_fun)
+    info2 = scheme_2.solve(target=p_h)
 
-    info3 = scheme_3.solve(target=u_h_fun)
-    p_prev_fun.assign(p_h_fun)
-    u_prev_fun.assign(u_h_fun)
+    info3 = scheme_3.solve(target=u_h)
+    p_prev.assign(p_h)
+    u_prev.assign(u_h)
 
     # increment time
     t += dt.value
     i += 1
 
-u_h_fun.plot()
-p_h_fun.plot()
+u_h.plot()
+p_h.plot()
 
 # %% [markdown]
 # time step by solving __Step 1__, __Step 2__, and then __Step
