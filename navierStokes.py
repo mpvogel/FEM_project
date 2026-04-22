@@ -22,7 +22,7 @@
 from dune.grid import cartesianDomain
 from dune.alugrid import aluConformGrid as leafGridView
 from dune.fem.view import adaptiveLeafGridView
-from dune.fem.space import lagrange, composite
+from dune.fem.space import lagrange
 from dune.fem.scheme import galerkin as solutionScheme
 from ufl import (
     TrialFunction,
@@ -53,14 +53,15 @@ gridView = adaptiveLeafGridView(gridView)
 dim = gridView.dimension
 
 # velocity space (vector valued)
-V = lagrange(gridView, order=2, dimRange=gridView.dimension)
+velocitySpace = lagrange(gridView, order=2, dimRange=gridView.dimension)
 
 # pressure space
-Q = lagrange(gridView, order=1)
+pressureSpace = lagrange(gridView, order=1)
 
-compositeTaylorHoodSpace = composite(V, Q, componentNames=["velocity", "pressure"])
-U = TrialFunction(compositeTaylorHoodSpace)
-V = TestFunction(compositeTaylorHoodSpace)
+u = TrialFunction(velocitySpace)
+v = TestFunction(velocitySpace)
+p = TrialFunction(pressureSpace)
+q = TestFunction(pressureSpace)
 
 rho = Constant(1, "rho")
 mu = Constant(1, "mu")
@@ -75,22 +76,18 @@ def sigma(u, p):
     return 2 * mu * epsilon(u) - p * Identity(dim)
 
 
-u = as_vector([U[0], U[1]])  # 2d velocity
-u_prelim_fun = compositeTaylorHoodSpace.function(name="u_prelim")
-u_prev_fun = compositeTaylorHoodSpace.function(name="u_prev")
+u_prelim_fun = velocitySpace.function(name="u_prelim")
+u_prev_fun = velocitySpace.function(name="u_prev")
 # u_prev_fun.assign(0)  # initial condition: u=0 at time t=0
-u_h_fun = compositeTaylorHoodSpace.function(name="u_h")
-u_prelim = as_vector([u_prelim_fun[0], u_prelim_fun[1]])
-u_prev = as_vector([u_prev_fun[0], u_prev_fun[1]])
-u_h = as_vector([u_h_fun[0], u_h_fun[1]])
-v = as_vector([V[0], V[1]])
-p = U[dim]  # 1d pressure
-p_h_fun = compositeTaylorHoodSpace.function(name="p_h")
-p_prev_fun = compositeTaylorHoodSpace.function(name="p_prev")
-p_h = p_h_fun[dim]
-p_prev = p_prev_fun[dim]
-q = V[dim]
-n = FacetNormal(V)
+u_h_fun = velocitySpace.function(name="u_h")
+u_prelim = u_prelim_fun
+u_prev = u_prev_fun
+u_h = u_h_fun
+p_h_fun = pressureSpace.function(name="p_h")
+p_prev_fun = pressureSpace.function(name="p_prev")
+p_h = p_h_fun
+p_prev = p_prev_fun
+n = FacetNormal(velocitySpace)
 
 fx = Constant(0, "fx")
 fy = Constant(0, "fy")
@@ -115,18 +112,19 @@ form_2 = (
 form_3 = dot(u, v) * dx - dot(u_prelim, v) * dx + dt * dot(grad(p_h - p_prev), v) * dx
 
 
-x = SpatialCoordinate(compositeTaylorHoodSpace)
+x = SpatialCoordinate(velocitySpace)
+x_p = SpatialCoordinate(pressureSpace)
 dbc_velocity_1 = DirichletBC(
-    compositeTaylorHoodSpace, [0, 0, None], abs(x[1]) < 1e-10
+    velocitySpace, [0, 0], abs(x[1]) < 1e-10
 )  # zero velocity at bottom
 dbc_velocity_2 = DirichletBC(
-    compositeTaylorHoodSpace, [0, 0, None], abs(x[1] - H) < 1e-10
+    velocitySpace, [0, 0], abs(x[1] - H) < 1e-10
 )  # zero velocity at top
 dbc_pressure_1 = DirichletBC(
-    compositeTaylorHoodSpace, [None, None, 8], abs(x[0]) < 1e-10
+    pressureSpace, 8, abs(x_p[0]) < 1e-10
 )  # pressure at left boundary
 dbc_pressure_2 = DirichletBC(
-    compositeTaylorHoodSpace, [None, None, 0], abs(x[0] - L) < 1e-10
+    pressureSpace, 0, abs(x_p[0] - L) < 1e-10
 )  # pressure at right boundary
 
 dbc_pressure = [dbc_pressure_1, dbc_pressure_2]
@@ -177,6 +175,8 @@ while t < T:
     t += dt.value
     i += 1
 
+u_h_fun.plot()
+p_h_fun.plot()
 
 # %% [markdown]
 # time step by solving __Step 1__, __Step 2__, and then __Step
