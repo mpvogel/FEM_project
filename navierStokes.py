@@ -42,6 +42,7 @@ from ufl import (
     as_vector,
     outer,
     dot,
+    conditional,
 )
 from dune.ufl import Constant, DirichletBC
 from tqdm import tqdm
@@ -137,6 +138,7 @@ def make_ipcs_problem(
     make_pressure_bcs,
     p_initial=None,
     include_pressure_boundary_term=False,
+    make_pressure_boundary_indicator=None,
     solver_parameters=None,
     solver_backend=("istl", "gmres"),
 ):
@@ -177,7 +179,15 @@ def make_ipcs_problem(
         + rho * dot(dot(u_prev, nabla_grad(u_prev)), v) * dx
     )
     if include_pressure_boundary_term:
-        form_1 -= dot(mu * dot(nabla_grad(u), n) - p_prev * n, v) * ds
+        if make_pressure_boundary_indicator is None:
+            pressure_boundary_indicator = 1
+        else:
+            pressure_boundary_indicator = make_pressure_boundary_indicator(x)
+        form_1 -= (
+            pressure_boundary_indicator
+            * dot(mu * dot(nabla_grad(u), n) - p_prev * n, v)
+            * ds
+        )
 
     form_2 = (
         dot(grad(p), grad(q)) * dx
@@ -252,6 +262,13 @@ def solve_poiseuille_on_grid(
             DirichletBC(pressureSpace, 0, abs(x[0] - L) < 1e-10),
         ]
 
+    def make_pressure_boundary_indicator(x):
+        return conditional(
+            abs(x[0]) < 1e-10,
+            1,
+            conditional(abs(x[0] - L) < 1e-10, 1, 0),
+        )
+
     problem = make_ipcs_problem(
         gridView,
         label,
@@ -262,6 +279,7 @@ def solve_poiseuille_on_grid(
         make_pressure_bcs=make_pressure_bcs,
         p_initial=lambda x: 8 * (1 - x[0]),
         include_pressure_boundary_term=True,
+        make_pressure_boundary_indicator=make_pressure_boundary_indicator,
         solver_parameters=solver_parameters,
         solver_backend=solver_backend,
     )
@@ -479,6 +497,9 @@ def solve_cylinder_flow(
             DirichletBC(pressureSpace, 0, abs(x[0] - CYLINDER_L) < 1e-10),
         ]
 
+    def make_pressure_boundary_indicator(x):
+        return conditional(abs(x[0] - CYLINDER_L) < 1e-10, 1, 0)
+
     problem = make_ipcs_problem(
         gridView,
         label,
@@ -488,6 +509,7 @@ def solve_cylinder_flow(
         make_velocity_bcs=make_velocity_bcs,
         make_pressure_bcs=make_pressure_bcs,
         include_pressure_boundary_term=True,
+        make_pressure_boundary_indicator=make_pressure_boundary_indicator,
         solver_parameters=solverParameters,
         solver_backend=("istl", "gmres"),
     )
