@@ -42,13 +42,10 @@ from ufl import (
     as_vector,
     outer,
     dot,
-    conditional,
 )
 from dune.ufl import Constant, DirichletBC
 from tqdm import tqdm
-import os
 import pygmsh
-import time
 
 L = 1.0
 H = 1.0
@@ -60,23 +57,13 @@ CYLINDER_L = 2.2
 CYLINDER_H = 0.41
 CYLINDER_CENTER = (0.2, 0.2)
 CYLINDER_RADIUS = 0.05
-CYLINDER_BOUNDARY_TOL = 1e-4
 CYLINDER_T = 5.0
 CYLINDER_DT = CYLINDER_T / 1000
 CYLINDER_MESH_SIZE = 0.025
 INFLOW_RAMP_TIME = 1.0
-TASK_D_PRECONDITIONERS = ["ilu", "jacobi", "ssor"]
-TASK_D_T = 0.1
-TASK_D_DT = 0.02
-TASK_D_CELLS = [16, 16]
-TASK_E_PRECONDITIONER = "jacobi"
-TASK_E_SOLVER = ("petsc", "gmres")
-TASK_E_T = 0.1
-TASK_E_DT = 0.02
-TASK_E_CELLS = [32, 32]
 
 # Choose which exercise blocks are executed when running this file.
-# Valid entries: "A", "B", "C", "D", "E". Example: RUN_TASKS = ["A", "C"]
+# Valid entries: "A", "B", "C". Example: RUN_TASKS = ["A", "C"]
 RUN_TASKS = ["C"]
 
 steady_tolerance = 1e-8
@@ -94,55 +81,13 @@ solverParameters = {
 }
 
 
-def mpi_rank():
-    for key in ("OMPI_COMM_WORLD_RANK", "PMI_RANK", "PMIX_RANK", "MV2_COMM_WORLD_RANK"):
-        if key in os.environ:
-            return int(os.environ[key])
-    return 0
-
-
-def mpi_size():
-    for key in ("OMPI_COMM_WORLD_SIZE", "PMI_SIZE", "PMIX_SIZE", "MV2_COMM_WORLD_SIZE"):
-        if key in os.environ:
-            return int(os.environ[key])
-    return 1
-
-
-def is_root_process():
-    return mpi_rank() == 0
-
-
-def print_root(*args, **kwargs):
-    if is_root_process():
-        print(*args, **kwargs)
-
-
-def make_solver_parameters(preconditioner="ilu", linear_verbose=False):
-    parameters = dict(solverParameters)
-    parameters["linear.preconditioning.method"] = preconditioner
-    parameters["linear.verbose"] = linear_verbose
-    return parameters
-
-
 def epsilon(u):
     return sym(nabla_grad(u))
 
 
-def make_ipcs_problem(
-    gridView,
-    name,
-    mu_value,
-    rho_value,
-    dt_value,
-    make_velocity_bcs,
-    make_pressure_bcs,
-    p_initial=None,
-    include_pressure_boundary_term=False,
-    make_pressure_boundary_indicator=None,
-    solver_parameters=None,
-    solver_backend=("istl", "gmres"),
-):
+def solve_poiseuille_on_grid(gridView, label, L=1.0, H=1.0, T=10.0, dt_value=0.02):
     dim = gridView.dimension
+
     velocitySpace = lagrange(gridView, order=2, dimRange=dim)
     pressureSpace = lagrange(gridView, order=1)
 
@@ -151,23 +96,24 @@ def make_ipcs_problem(
     p = TrialFunction(pressureSpace)
     q = TestFunction(pressureSpace)
 
-    rho = Constant(rho_value, "rho")
-    mu = Constant(mu_value, "mu")
+    rho = Constant(1, "rho")
+    mu = Constant(1, "mu")
     dt = Constant(dt_value, "dt")
+
+    def local_sigma(u, p):
+        return 2 * mu * epsilon(u) - p * Identity(dim)
+
     x = SpatialCoordinate(velocitySpace)
+    solution_u = as_vector([4 * x[1] * (1 - x[1]), 0])
+    solution_p = 8 * (1 - x[0])
 
-    solution_name = name.lower().replace(" ", "_")
-    u_prelim = velocitySpace.function(name=f"{solution_name}_u_prelim")
-    u_prev = velocitySpace.function(name=f"{solution_name}_u_prev")
-    u_h = velocitySpace.function(name=f"{solution_name}_u_h")
-    p_h = pressureSpace.function(name=f"{solution_name}_p_h")
-    if p_initial is None:
-        p_prev = pressureSpace.function(name=f"{solution_name}_p_prev")
-    else:
-        p_prev = pressureSpace.interpolate(p_initial, name=f"{solution_name}_p_prev")
+    name = label.lower().replace(" ", "_")
+    u_prelim = velocitySpace.function(name=f"{name}_u_prelim")
+    u_prev = velocitySpace.function(name=f"{name}_u_prev")
+    u_h = velocitySpace.function(name=f"{name}_u_h")
 
-    def local_sigma(u_value, p_value):
-        return 2 * mu * epsilon(u_value) - p_value * Identity(dim)
+    p_h = pressureSpace.function(name=f"{name}_p_h")
+    p_prev = pressureSpace.interpolate(lambda x: 8 * (1 - x[0]), name=f"{name}_p_prev")
 
     n = FacetNormal(velocitySpace)
     f = as_vector([Constant(0, "fx"), Constant(0, "fy")])
@@ -175,19 +121,10 @@ def make_ipcs_problem(
     form_1 = (
         rho * dot(u - u_prev, v) / dt * dx
         + inner(local_sigma(u, p_prev), epsilon(v)) * dx
+        - dot(mu * dot(nabla_grad(u), n) - p_prev * n, v) * ds
         - dot(f, v) * dx
         + rho * dot(dot(u_prev, nabla_grad(u_prev)), v) * dx
     )
-    if include_pressure_boundary_term:
-        if make_pressure_boundary_indicator is None:
-            pressure_boundary_indicator = 1
-        else:
-            pressure_boundary_indicator = make_pressure_boundary_indicator(x)
-        form_1 -= (
-            pressure_boundary_indicator
-            * dot(mu * dot(nabla_grad(u), n) - p_prev * n, v)
-            * ds
-        )
 
     form_2 = (
         dot(grad(p), grad(q)) * dx
@@ -201,194 +138,106 @@ def make_ipcs_problem(
         + dt * dot(grad(p_h - p_prev), v) * dx
     )
 
-    dbc_velocity = make_velocity_bcs(velocitySpace, x)
-    dbc_pressure = make_pressure_bcs(pressureSpace, x)
-    solver_parameters = solver_parameters or solverParameters
+    dbc_velocity = [
+        DirichletBC(velocitySpace, [0, 0], abs(x[1]) < 1e-10),
+        DirichletBC(velocitySpace, [0, 0], abs(x[1] - H) < 1e-10),
+    ]
+    dbc_pressure = [
+        DirichletBC(pressureSpace, 8, abs(x[0]) < 1e-10),
+        DirichletBC(pressureSpace, 0, abs(x[0] - L) < 1e-10),
+    ]
 
     scheme_1 = solutionScheme(
         [form_1 == 0, *dbc_velocity],
-        parameters=solver_parameters,
-        solver=solver_backend,
+        parameters=solverParameters,
+        solver=("istl", "gmres"),
     )
     scheme_2 = solutionScheme(
         [form_2 == 0, *dbc_pressure],
-        parameters=solver_parameters,
-        solver=solver_backend,
+        parameters=solverParameters,
+        solver=("istl", "gmres"),
     )
     scheme_3 = solutionScheme(
         [form_3 == 0, *dbc_velocity],
-        parameters=solver_parameters,
-        solver=solver_backend,
+        parameters=solverParameters,
+        solver=("istl", "gmres"),
     )
 
-    return {
-        "gridView": gridView,
-        "velocitySpace": velocitySpace,
-        "pressureSpace": pressureSpace,
-        "x": x,
-        "dt": dt,
-        "u_prelim": u_prelim,
-        "u_prev": u_prev,
-        "u_h": u_h,
-        "p_h": p_h,
-        "p_prev": p_prev,
-        "scheme_1": scheme_1,
-        "scheme_2": scheme_2,
-        "scheme_3": scheme_3,
-    }
-
-
-def solve_poiseuille_on_grid(
-    gridView,
-    label,
-    L=1.0,
-    H=1.0,
-    T=10.0,
-    dt_value=0.02,
-    solver_parameters=None,
-    collect_stats=False,
-    evaluate_diagnostics=True,
-    solver_backend=("istl", "gmres"),
-):
-    def make_velocity_bcs(velocitySpace, x):
-        return [
-            DirichletBC(velocitySpace, [0, 0], abs(x[1]) < 1e-10),
-            DirichletBC(velocitySpace, [0, 0], abs(x[1] - H) < 1e-10),
-        ]
-
-    def make_pressure_bcs(pressureSpace, x):
-        return [
-            DirichletBC(pressureSpace, 8, abs(x[0]) < 1e-10),
-            DirichletBC(pressureSpace, 0, abs(x[0] - L) < 1e-10),
-        ]
-
-    def make_pressure_boundary_indicator(x):
-        return conditional(
-            abs(x[0]) < 1e-10,
-            1,
-            conditional(abs(x[0] - L) < 1e-10, 1, 0),
-        )
-
-    problem = make_ipcs_problem(
-        gridView,
-        label,
-        mu_value=1,
-        rho_value=1,
-        dt_value=dt_value,
-        make_velocity_bcs=make_velocity_bcs,
-        make_pressure_bcs=make_pressure_bcs,
-        p_initial=lambda x: 8 * (1 - x[0]),
-        include_pressure_boundary_term=True,
-        make_pressure_boundary_indicator=make_pressure_boundary_indicator,
-        solver_parameters=solver_parameters,
-        solver_backend=solver_backend,
-    )
-    gridView = problem["gridView"]
-    x = problem["x"]
-    dt = problem["dt"]
-    u_prelim = problem["u_prelim"]
-    u_prev = problem["u_prev"]
-    u_h = problem["u_h"]
-    p_h = problem["p_h"]
-    p_prev = problem["p_prev"]
-    scheme_1 = problem["scheme_1"]
-    scheme_2 = problem["scheme_2"]
-    scheme_3 = problem["scheme_3"]
-    solution_u = as_vector([4 * x[1] * (1 - x[1]), 0])
-    solution_p = 8 * (1 - x[0])
-
-    print_root(f"\n{label}: {gridView.size(0)} elements")
+    print(f"\n{label}: {gridView.size(0)} elements")
     t = 0
     total_steps = max(int(round(T / dt.value)), 1)
     steady_time = None
     error_history = []
-    solve_stats = []
-    for step in tqdm(range(1, total_steps + 1), desc=label, disable=not is_root_process()):
-        step_start = time.perf_counter()
-        info_1 = scheme_1.solve(target=u_prelim)
-        info_2 = scheme_2.solve(target=p_h)
-        info_3 = scheme_3.solve(target=u_h)
-        step_elapsed = time.perf_counter() - step_start
-        if collect_stats:
-            solve_stats.append(
-                {
-                    "step": step,
-                    "elapsed": step_elapsed,
-                    "step_1": info_1,
-                    "step_2": info_2,
-                    "step_3": info_3,
-                }
-            )
+    for step in tqdm(range(1, total_steps + 1), desc=label):
+        scheme_1.solve(target=u_prelim)
+        scheme_2.solve(target=p_h)
+        scheme_3.solve(target=u_h)
 
-        if evaluate_diagnostics:
-            velocity_l2_error = sqrt(
-                integrate(
-                    inner(u_h - solution_u, u_h - solution_u),
-                    gridView=gridView,
-                    order=6,
-                )
+        velocity_l2_error = sqrt(
+            integrate(
+                inner(u_h - solution_u, u_h - solution_u),
+                gridView=gridView,
+                order=6,
             )
-            pressure_l2_error = sqrt(
-                integrate(
-                    (p_h - solution_p) ** 2,
-                    gridView=gridView,
-                    order=4,
-                )
+        )
+        pressure_l2_error = sqrt(
+            integrate(
+                (p_h - solution_p) ** 2,
+                gridView=gridView,
+                order=4,
             )
-            velocity_update_l2 = sqrt(
-                integrate(
-                    inner(u_h - u_prev, u_h - u_prev),
-                    gridView=gridView,
-                    order=6,
-                )
+        )
+        velocity_update_l2 = sqrt(
+            integrate(
+                inner(u_h - u_prev, u_h - u_prev),
+                gridView=gridView,
+                order=6,
             )
-            pressure_update_l2 = sqrt(
-                integrate(
-                    (p_h - p_prev) ** 2,
-                    gridView=gridView,
-                    order=4,
-                )
+        )
+        pressure_update_l2 = sqrt(
+            integrate(
+                (p_h - p_prev) ** 2,
+                gridView=gridView,
+                order=4,
             )
-            temporal_update_l2 = sqrt(velocity_update_l2**2 + pressure_update_l2**2)
-            error_history.append(
-                (
-                    t + dt.value,
-                    velocity_l2_error,
-                    pressure_l2_error,
-                    temporal_update_l2,
-                )
+        )
+        temporal_update_l2 = sqrt(velocity_update_l2**2 + pressure_update_l2**2)
+        error_history.append(
+            (
+                t + dt.value,
+                velocity_l2_error,
+                pressure_l2_error,
+                temporal_update_l2,
             )
-            if steady_time is None and temporal_update_l2 < steady_tolerance:
-                steady_time = t + dt.value
+        )
+        if steady_time is None and temporal_update_l2 < steady_tolerance:
+            steady_time = t + dt.value
 
         p_prev.assign(p_h)
         u_prev.assign(u_h)
         t += dt.value
 
-    if evaluate_diagnostics:
-        final_time, final_u_error, final_p_error, final_update = error_history[-1]
-        print_root(
-            f"{label}: Final L2 errors at "
-            f"t={final_time:.4f}: ||u_h-u_exact||_L2={final_u_error:.6e}, "
-            f"||p_h-p_exact||_L2={final_p_error:.6e}"
+    final_time, final_u_error, final_p_error, final_update = error_history[-1]
+    print(
+        f"{label}: Final L2 errors at "
+        f"t={final_time:.4f}: ||u_h-u_exact||_L2={final_u_error:.6e}, "
+        f"||p_h-p_exact||_L2={final_p_error:.6e}"
+    )
+    if steady_time is None:
+        print(
+            f"{label}: Steady state criterion not reached: "
+            f"combined temporal update remained {final_update:.6e} "
+            f"> {steady_tolerance:.1e} at T={T}."
         )
-        if steady_time is None:
-            print_root(
-                f"{label}: Steady state criterion not reached: "
-                f"combined temporal update remained {final_update:.6e} "
-                f"> {steady_tolerance:.1e} at T={T}."
-            )
-        else:
-            print_root(
-                f"{label}: Steady state reached at "
-                f"t={steady_time:.4f} with criterion "
-                f"sqrt(||u^n-u^(n-1)||_L2^2 + ||p^n-p^(n-1)||_L2^2) "
-                f"< {steady_tolerance:.1e}."
-            )
     else:
-        print_root(f"{label}: completed {total_steps} steps to t={t:.4f}.")
+        print(
+            f"{label}: Steady state reached at "
+            f"t={steady_time:.4f} with criterion "
+            f"sqrt(||u^n-u^(n-1)||_L2^2 + ||p^n-p^(n-1)||_L2^2) "
+            f"< {steady_tolerance:.1e}."
+        )
 
-    if plot_results and is_root_process():
+    if plot_results:
         u_h.plot()
         p_h.plot()
 
@@ -398,7 +247,6 @@ def solve_poiseuille_on_grid(
         "p_h": p_h,
         "error_history": error_history,
         "steady_time": steady_time,
-        "solve_stats": solve_stats,
     }
 
 
@@ -423,10 +271,10 @@ def make_unstructured_channel_domain(mesh_size=UNSTRUCTURED_MESH_SIZE):
 
 def run_task_b():
     domain = make_unstructured_channel_domain()
-    print_root("Task B unstructured mesh elements:", len(domain["simplices"]))
+    print("Task B unstructured mesh elements:", len(domain["simplices"]))
     gridView = leafGridView(domain, dimgrid=2)
     gridView = adaptiveLeafGridView(gridView)
-    if plot_results and is_root_process():
+    if plot_results:
         gridView.plot()
     return solve_poiseuille_on_grid(gridView, "Task B unstructured", L=L, H=H, T=T, dt_value=DT)
 
@@ -471,64 +319,95 @@ def solve_cylinder_flow(
     dt_value=CYLINDER_DT,
     ramp_time=INFLOW_RAMP_TIME,
 ):
+    dim = gridView.dimension
+    velocitySpace = lagrange(gridView, order=2, dimRange=dim)
+    pressureSpace = lagrange(gridView, order=1)
+
+    u = TrialFunction(velocitySpace)
+    v = TestFunction(velocitySpace)
+    p = TrialFunction(pressureSpace)
+    q = TestFunction(pressureSpace)
+
+    rho = Constant(1, "rho")
+    mu = Constant(1e-3, "mu")
+    dt = Constant(dt_value, "dt")
     inflow_ramp = Constant(0.0, "inflow_ramp")
 
-    def make_velocity_bcs(velocitySpace, x):
-        inflow_profile = as_vector(
-            [inflow_ramp * 6 * x[1] * (CYLINDER_H - x[1]) / CYLINDER_H**2, 0]
-        )
-        cylinder_boundary = (
-            abs(
-                (x[0] - CYLINDER_CENTER[0]) ** 2
-                + (x[1] - CYLINDER_CENTER[1]) ** 2
-                - CYLINDER_RADIUS**2
-            )
-            < CYLINDER_BOUNDARY_TOL
-        )
-        return [
-            DirichletBC(velocitySpace, inflow_profile, abs(x[0]) < 1e-10),
-            DirichletBC(velocitySpace, [0, 0], abs(x[1]) < 1e-10),
-            DirichletBC(velocitySpace, [0, 0], abs(x[1] - CYLINDER_H) < 1e-10),
-            DirichletBC(velocitySpace, [0, 0], cylinder_boundary),
-        ]
+    def local_sigma(u, p):
+        return 2 * mu * epsilon(u) - p * Identity(dim)
 
-    def make_pressure_bcs(pressureSpace, x):
-        return [
-            DirichletBC(pressureSpace, 0, abs(x[0] - CYLINDER_L) < 1e-10),
-        ]
-
-    def make_pressure_boundary_indicator(x):
-        return conditional(abs(x[0] - CYLINDER_L) < 1e-10, 1, 0)
-
-    problem = make_ipcs_problem(
-        gridView,
-        label,
-        mu_value=1e-3,
-        rho_value=1,
-        dt_value=dt_value,
-        make_velocity_bcs=make_velocity_bcs,
-        make_pressure_bcs=make_pressure_bcs,
-        include_pressure_boundary_term=True,
-        make_pressure_boundary_indicator=make_pressure_boundary_indicator,
-        solver_parameters=solverParameters,
-        solver_backend=("istl", "gmres"),
+    x = SpatialCoordinate(velocitySpace)
+    inflow_profile = as_vector(
+        [inflow_ramp * 6 * x[1] * (CYLINDER_H - x[1]) / CYLINDER_H**2, 0]
     )
-    gridView = problem["gridView"]
-    dt = problem["dt"]
-    u_prelim = problem["u_prelim"]
-    u_prev = problem["u_prev"]
-    u_h = problem["u_h"]
-    p_h = problem["p_h"]
-    p_prev = problem["p_prev"]
-    scheme_1 = problem["scheme_1"]
-    scheme_2 = problem["scheme_2"]
-    scheme_3 = problem["scheme_3"]
 
-    print_root(f"\n{label}: {gridView.size(0)} elements")
+    u_prelim = velocitySpace.function(name="task_c_u_prelim")
+    u_prev = velocitySpace.function(name="task_c_u_prev")
+    u_h = velocitySpace.function(name="task_c_u_h")
+
+    p_h = pressureSpace.function(name="task_c_p_h")
+    p_prev = pressureSpace.function(name="task_c_p_prev")
+
+    f = as_vector([Constant(0, "fx"), Constant(0, "fy")])
+
+    form_1 = (
+        rho * dot(u - u_prev, v) / dt * dx
+        + inner(local_sigma(u, p_prev), epsilon(v)) * dx
+        - dot(f, v) * dx
+        + rho * dot(dot(u_prev, nabla_grad(u_prev)), v) * dx
+    )
+
+    form_2 = (
+        dot(grad(p), grad(q)) * dx
+        - dot(grad(p_prev), grad(q)) * dx
+        + 1 / dt * div(u_prelim) * q * dx
+    )
+
+    form_3 = (
+        dot(u, v) * dx
+        - dot(u_prelim, v) * dx
+        + dt * dot(grad(p_h - p_prev), v) * dx
+    )
+
+    cylinder_boundary = (
+        abs(
+            (x[0] - CYLINDER_CENTER[0]) ** 2
+            + (x[1] - CYLINDER_CENTER[1]) ** 2
+            - CYLINDER_RADIUS**2
+        )
+        < 1e-5
+    )
+    dbc_velocity = [
+        DirichletBC(velocitySpace, inflow_profile, abs(x[0]) < 1e-10),
+        DirichletBC(velocitySpace, [0, 0], abs(x[1]) < 1e-10),
+        DirichletBC(velocitySpace, [0, 0], abs(x[1] - CYLINDER_H) < 1e-10),
+        DirichletBC(velocitySpace, [0, 0], cylinder_boundary),
+    ]
+    dbc_pressure = [
+        DirichletBC(pressureSpace, 0, abs(x[0] - CYLINDER_L) < 1e-10),
+    ]
+
+    scheme_1 = solutionScheme(
+        [form_1 == 0, *dbc_velocity],
+        parameters=solverParameters,
+        solver=("istl", "gmres"),
+    )
+    scheme_2 = solutionScheme(
+        [form_2 == 0, *dbc_pressure],
+        parameters=solverParameters,
+        solver=("istl", "gmres"),
+    )
+    scheme_3 = solutionScheme(
+        [form_3 == 0, *dbc_velocity],
+        parameters=solverParameters,
+        solver=("istl", "gmres"),
+    )
+
+    print(f"\n{label}: {gridView.size(0)} elements")
     total_steps = max(int(round(T / dt.value)), 1)
     output_every = max(total_steps // 20, 1)
     t = 0
-    for step in tqdm(range(1, total_steps + 1), desc=label, disable=not is_root_process()):
+    for step in tqdm(range(1, total_steps + 1), desc=label):
         next_t = t + dt.value
         set_constant_value(inflow_ramp, min(next_t / ramp_time, 1.0))
 
@@ -540,202 +419,22 @@ def solve_cylinder_flow(
         u_prev.assign(u_h)
         t = next_t
 
-        if plot_results and is_root_process() and (step % output_every == 0 or step == total_steps):
+        if plot_results and (step % output_every == 0 or step == total_steps):
             u_h.plot()
             p_h.plot()
 
-    print_root(f"{label}: finished at t={t:.4f} with dt={dt.value:.2e}.")
+    print(f"{label}: finished at t={t:.4f} with dt={dt.value:.2e}.")
     return {"gridView": gridView, "u_h": u_h, "p_h": p_h}
 
 
 def run_task_c():
     domain = make_cylinder_domain()
-    print_root("Task C cylinder mesh elements:", len(domain["simplices"]))
+    print("Task C cylinder mesh elements:", len(domain["simplices"]))
     gridView = leafGridView(domain, dimgrid=2, lbMethod=14)
     gridView = adaptiveLeafGridView(gridView)
-    if plot_results and is_root_process():
+    if plot_results:
         gridView.plot()
     return solve_cylinder_flow(gridView)
-
-
-def info_number(info, key):
-    if not isinstance(info, dict):
-        return None
-    value = info.get(key)
-    if isinstance(value, (int, float)):
-        return value
-    return None
-
-
-def summarize_solve_stats(solve_stats):
-    summary = {}
-    for substep in ("step_1", "step_2", "step_3"):
-        linear_values = [
-            info_number(step[substep], "linear_iterations")
-            for step in solve_stats
-            if info_number(step[substep], "linear_iterations") is not None
-        ]
-        nonlinear_values = [
-            info_number(step[substep], "iterations")
-            for step in solve_stats
-            if info_number(step[substep], "iterations") is not None
-        ]
-        summary[substep] = {
-            "linear_total": sum(linear_values) if linear_values else None,
-            "linear_average": (
-                sum(linear_values) / len(linear_values) if linear_values else None
-            ),
-            "nonlinear_total": sum(nonlinear_values) if nonlinear_values else None,
-            "nonlinear_average": (
-                sum(nonlinear_values) / len(nonlinear_values) if nonlinear_values else None
-            ),
-        }
-    summary["elapsed_total"] = sum(step["elapsed"] for step in solve_stats)
-    return summary
-
-
-def format_number(value):
-    if value is None:
-        return "n/a"
-    if isinstance(value, float):
-        return f"{value:.2f}"
-    return str(value)
-
-
-def print_benchmark_table(results):
-    if not is_root_process():
-        return
-
-    print("\nTask D preconditioner benchmark")
-    print(
-        "preconditioner | status | wall time [s] | "
-        "step1 lin it | step2 lin it | step3 lin it"
-    )
-    print("-" * 86)
-    for result in results:
-        if result["status"] != "ok":
-            print(
-                f"{result['preconditioner']:14s} | failed | "
-                f"{result['elapsed']:.3f} | {result['error']}"
-            )
-            continue
-
-        summary = result["summary"]
-        print(
-            f"{result['preconditioner']:14s} | ok     | "
-            f"{result['elapsed']:.3f} | "
-            f"{format_number(summary['step_1']['linear_total']):>12s} | "
-            f"{format_number(summary['step_2']['linear_total']):>12s} | "
-            f"{format_number(summary['step_3']['linear_total']):>12s}"
-        )
-
-    print("\nAverage linear iterations per time step")
-    print("preconditioner | step1 | step2 | step3")
-    print("-" * 44)
-    for result in results:
-        if result["status"] != "ok":
-            continue
-        summary = result["summary"]
-        print(
-            f"{result['preconditioner']:14s} | "
-            f"{format_number(summary['step_1']['linear_average']):>5s} | "
-            f"{format_number(summary['step_2']['linear_average']):>5s} | "
-            f"{format_number(summary['step_3']['linear_average']):>5s}"
-        )
-
-
-def run_preconditioner_benchmark(
-    preconditioners,
-    label,
-    cells,
-    T,
-    dt_value,
-    solver_backend=("istl", "gmres"),
-    parallel_hint=False,
-):
-    global plot_results
-
-    old_plot_results = plot_results
-    plot_results = False
-    results = []
-
-    print_root(
-        f"{label}: running on MPI size {mpi_size()} with "
-        f"threading.use={threading.use} and solver={solver_backend}"
-    )
-    if parallel_hint and is_root_process():
-        print(
-            "Task E command example: "
-            "mpirun -np 4 ../.venv/bin/python navierStokes.py"
-        )
-
-    try:
-        for preconditioner in preconditioners:
-            parameters = make_solver_parameters(preconditioner=preconditioner)
-            domain = cartesianDomain([0, 0], [L, H], cells)
-            gridView = adaptiveLeafGridView(leafGridView(domain))
-            start = time.perf_counter()
-            try:
-                result = solve_poiseuille_on_grid(
-                    gridView,
-                    f"{label} {preconditioner}",
-                    L=L,
-                    H=H,
-                    T=T,
-                    dt_value=dt_value,
-                    solver_parameters=parameters,
-                    collect_stats=True,
-                    evaluate_diagnostics=False,
-                    solver_backend=solver_backend,
-                )
-                elapsed = time.perf_counter() - start
-                results.append(
-                    {
-                        "preconditioner": preconditioner,
-                        "status": "ok",
-                        "elapsed": elapsed,
-                        "summary": summarize_solve_stats(result["solve_stats"]),
-                        "result": result,
-                    }
-                )
-            except Exception as exc:
-                elapsed = time.perf_counter() - start
-                results.append(
-                    {
-                        "preconditioner": preconditioner,
-                        "status": "failed",
-                        "elapsed": elapsed,
-                        "error": f"{type(exc).__name__}: {exc}",
-                    }
-                )
-                print_root(f"{label} {preconditioner}: failed with {exc!r}")
-    finally:
-        plot_results = old_plot_results
-
-    print_benchmark_table(results)
-    return results
-
-
-def run_task_d():
-    return run_preconditioner_benchmark(
-        TASK_D_PRECONDITIONERS,
-        "Task D",
-        TASK_D_CELLS,
-        TASK_D_T,
-        TASK_D_DT,
-    )
-
-
-def run_task_e():
-    return run_preconditioner_benchmark(
-        [TASK_E_PRECONDITIONER],
-        "Task E MPI",
-        TASK_E_CELLS,
-        TASK_E_T,
-        TASK_E_DT,
-        solver_backend=TASK_E_SOLVER,
-        parallel_hint=True,
-    )
 
 
 def main():
@@ -748,12 +447,8 @@ def main():
             results["B"] = run_task_b()
         elif task == "C":
             results["C"] = run_task_c()
-        elif task == "D":
-            results["D"] = run_task_d()
-        elif task == "E":
-            results["E"] = run_task_e()
         else:
-            raise ValueError(f"Unknown task {task!r}; use 'A', 'B', 'C', 'D', and/or 'E'.")
+            raise ValueError(f"Unknown task {task!r}; use 'A', 'B', and/or 'C'.")
     return results
 
 # %% [markdown]
