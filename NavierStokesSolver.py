@@ -63,8 +63,10 @@ class NavierStokesSolver:
         self.scheme_3 = None
         self.solution_p = None
         self.solution_u = None
+        self.inflow_factor = None
+        self.inflow_ramp = None
 
-    def buildForms(self):
+    def buildForms(self, initial_p_lambda = None):
         dim = self.gridView.dimension
         self.velocitySpace = lagrange(self.gridView, order=2, dimRange=dim)
         self.pressureSpace = lagrange(self.gridView, order=1)
@@ -89,9 +91,10 @@ class NavierStokesSolver:
         self.v = v
 
         self.p_h = self.pressureSpace.function(name="p_h")
-        self.p_prev = self.pressureSpace.interpolate(
-            lambda x: 8 * (1 - x[0]), name="p_prev"
-        )
+        if initial_p_lambda is not None:
+            self.p_prev = self.pressureSpace.interpolate(initial_p_lambda, name="p_prev")
+        else:
+            self.p_prev = self.pressureSpace.function(name="p_prev")
 
         n = FacetNormal(self.velocitySpace)
         self.n = n
@@ -140,27 +143,17 @@ class NavierStokesSolver:
         self,
         cyclinder_c,
         cylinder_r,
-        inflow_ramp,
+        inflow_ramp_time=1.0,
     ):
         # TODO - add option for time-dependent ramp function bc bc are not consitsten in the beginning.
-        inflow_profile = as_vector(
-            [inflow_ramp * 6 * self.x[1] * (self.H - self.x[1]) / self.H**2, 0]
-        )
-        inflow_profile = as_vector([1,0])
-        left_velo = [(6*self.x[1]*(self.H - self.x[1]))/self.H**2, 0]
-        cylinder_boundary = (
-            abs(
-                (self.x[0] - cyclinder_c[0]) ** 2
-                + (self.x[1] - cyclinder_c[1]) ** 2
-                - cylinder_r**2
-            )
-            < 1e-5
-        )
+        self.inflow_factor = Constant(0.0, "inflow_factor")
+        self.inflow_ramp_time = inflow_ramp_time
+        inflow_profile = as_vector([self.inflow_factor*6*self.x[1]*(self.H - self.x[1])/self.H**2, 0.0])
         self.dbc_velocity = [
-            DirichletBC(self.velocitySpace, left_velo, 1),
+            DirichletBC(self.velocitySpace, inflow_profile, 1),
             DirichletBC(self.velocitySpace, [0, 0], 3),
             DirichletBC(self.velocitySpace, [0, 0], 4),
-            DirichletBC(self.velocitySpace, [0, 0], cylinder_boundary),
+            DirichletBC(self.velocitySpace, [0, 0], 5),
         ]
         self.dbc_pressure = [
             DirichletBC(self.pressureSpace, 0, 2),
@@ -209,6 +202,10 @@ class NavierStokesSolver:
         steady_time = None
         error_history = []
         for step in tqdm(range(1, total_steps + 1)):
+            t_new = step * self.dt.value
+            if self.inflow_factor is not None:
+                self.inflow_factor.value = min(1.0, t_new / self.inflow_ramp_time)
+
             self.scheme_1.solve(target=self.u_prelim)
             self.scheme_2.solve(target=self.p_h)
             self.scheme_3.solve(target=self.u_h)
@@ -260,7 +257,7 @@ class NavierStokesSolver:
             t += self.dt.value
 
             # plot every 5 percent
-            if plot_results and step % max(total_steps // 20, 1) == 0:
+            if plot_results and step % max(total_steps // 50, 1) == 0:
                 self.u_h.plot()
                 self.p_h.plot()
 
@@ -347,25 +344,17 @@ class NavierStokesSolver:
             mesh = geom.generate_mesh()
             points, cells = mesh.points, mesh.cells_dict
             eps = 0.01 # tolerance
-            hole_lower = [cylinder_center[0] - cylinder_r - eps, cylinder_center[1] - cylinder_r - eps]
-            hole_upper = [cylinder_center[0] + cylinder_r + eps, cylinder_center[1] + cylinder_r + eps]
             # dictionary containing id and a list containing the lower left and upper right corner of the bounding box
             bndDomain = {1: [[-eps, -eps], [eps, self.H + eps]],  # left
                         2: [[self.L - eps, -eps], [self.L + eps, self.H + eps]],  # right
                         3: [[-eps, -eps], [self.L + eps, eps]],  # bottom
                         4: [[-eps, self.H - eps], [self.L + eps, self.H + eps]],  # top
-                        5: [hole_lower, hole_upper], # bounding box hole
-                        6: "default"  # top and bottom wall,
-                        # which are all other segments not contained in the above bounding boxes
+                        5: "default"  # hole boundary, which are all other segments not contained in the above bounding boxes
                         }
 
             # return dgf string which can be read by DGF parser or written to file for later use
             dgf = mesh2DGF(points, cells, bndDomain=bndDomain, dim=2)
             domain2d = (reader.dgfString, dgf)
-            # domain = {
-            #     "vertices": points[:, :2].astype(float),
-            #     "simplices": cells["triangle"].astype(int),
-            # }
         # fig = pyplot.figure()
         # boundaryFunction( gridView2d).plot(gridLines="white",linewidth=2,figure=fig)
         # fig.get_axes()[0].set_facecolor("lightgray")
@@ -380,7 +369,7 @@ if __name__ == "__main__":
     L = 1.0
     H = 1.0
     T = 5.0
-    DT = T/1e5
+    DT = 0.001
     STRUCTURED_CELLS = [16, 16]
     UNSTRUCTURED_MESH_SIZE = 0.08
     CYLINDER_L = 2.2
@@ -397,12 +386,12 @@ if __name__ == "__main__":
     threading.use = 1
 
     solverParameters = {
-        "nonlinear.tolerance": 1e-10,
+        "nonlinear.tolerance": 1e-8,
         "nonlinear.verbose": False,
-        "linear.tolerance": 1e-14,
+        "linear.tolerance": 1e-9,
         "linear.preconditioning.method": "ilu",
         "linear.verbose": False,
-        "linear.maxiterations": 1000,
+        "linear.maxiterations": 300,
     }
 
 
@@ -431,10 +420,10 @@ if __name__ == "__main__":
     solver.buildKarmanBC(
         CYLINDER_CENTER,
         CYLINDER_RADIUS,
-        inflow_ramp=0.0,
+        inflow_ramp_time=1.0,
     )
     solver.buildSolutionScheme(
-        solverParameters, solver_types=[("petsc", "gmres"), ("petsc", "gmres"), ("petsc", "gmres")]
+        solverParameters, solver_types=[("istl", "gmres"), ("istl", "cg"), ("istl", "cg")]
     )
     # solver.buildSolutionsPoiseuille()
     results = solver.solve(T=T, plot_results=True)
