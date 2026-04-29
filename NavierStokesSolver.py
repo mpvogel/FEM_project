@@ -290,8 +290,13 @@ class NavierStokesSolver:
             if plot_results and step % max(total_steps // 100, 1) == 0:
                 fig.clf()   # clear existing figure instead of opening new windows
 
-                self.u_h.plot(figure=(fig, 121))
-                self.p_h.plot(figure=(fig, 122))
+                # self.u_h.plot(figure=(fig, 121))
+                # self.p_h.plot(figure=(fig, 122))
+                os.makedirs("out", exist_ok=True)
+                self.gridView.writeVTK(
+                    f"out/solution_{step:04d}_dt_{self.dt.value:.4f}_mesh_resolution_{self.gridView.size(1)}",
+                    pointdata={"velocity": self.u_h, "pressure": self.p_h},
+                )
 
                 fig.suptitle(f"step={step}, t={t:.4f}")
                 fig.canvas.draw_idle()
@@ -301,7 +306,6 @@ class NavierStokesSolver:
         if plot_results:
             plt.ioff()
             plt.show()
-
         self.u_h.plot()
         self.p_h.plot()
 
@@ -490,6 +494,7 @@ if __name__ == "__main__":
     solver.visualize_boundary_conditions()
 
     solver_lib = "petsc"
+    solver.visualize_boundary_conditions()
     solver.buildSolutionScheme(
         solverParameters, solver_types=[(solver_lib, "gmres"), (solver_lib, "cg"), (solver_lib, "cg")]
     )
