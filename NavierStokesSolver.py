@@ -1,4 +1,3 @@
-# type: ignore
 from dune.grid import cartesianDomain, reader
 from dune.alugrid import aluConformGrid as leafGridView
 from dune.fem import integrate, threading
@@ -25,8 +24,10 @@ from ufl import (
 )
 from dune.ufl import Constant, DirichletBC
 # from dune.fem.function import boundaryFunction
+from dune.fem.function import gridFunction
 from gmsh2dgf import gmsh2DGF as mesh2DGF
 
+import os
 from tqdm import tqdm
 import pygmsh
 import dune.fem as fem
@@ -162,6 +163,18 @@ class NavierStokesSolver:
         # Neumann
         self.form_1 += - dot(self.mu * dot(nabla_grad(self.u), self.n) - self.p_prev * self.n, self.v) * ds(2)
 
+    def visualize_boundary_conditions(self):
+        @gridFunction(self.gridView, order=0, name="boundary_ids")
+        def bnd(element, x):
+        # Iterate over all intersections (edges in 2D) of the current element
+            for intersection in self.gridView.intersections(element):
+                if intersection.boundary:
+                    # Return the ID of the first boundary edge we find for this element
+                    return intersection.boundarySegmentIndex
+            return 0 # Interior elements get 0
+
+        bnd.plot()
+
     def buildSolutionScheme(
         self,
         solverParameters,
@@ -258,9 +271,13 @@ class NavierStokesSolver:
 
             # plot every 5 percent
             if plot_results and step % max(total_steps // 50, 1) == 0:
-                self.u_h.plot()
-                self.p_h.plot()
-
+                # self.u_h.plot()
+                # self.p_h.plot()
+                os.makedirs("out", exist_ok=True)
+                self.gridView.writeVTK(
+                    f"out/solution_{step:04d}_dt_{self.dt.value:.4f}_mesh_resolution_{self.gridView.size(1)}",
+                    pointdata={"velocity": self.u_h, "pressure": self.p_h},
+                )
         self.u_h.plot()
         self.p_h.plot()
 
@@ -378,7 +395,7 @@ if __name__ == "__main__":
     CYLINDER_RADIUS = 0.05
     CYLINDER_T = 5.0
     CYLINDER_DT = CYLINDER_T / 1000
-    CYLINDER_MESH_SIZE = 0.025
+    CYLINDER_MESH_SIZE = 0.045
     INFLOW_RAMP_TIME = 1.0
 
     steady_tolerance = 1e-8
@@ -391,7 +408,7 @@ if __name__ == "__main__":
         "linear.tolerance": 1e-9,
         "linear.preconditioning.method": "ilu",
         "linear.verbose": False,
-        "linear.maxiterations": 300,
+        "linear.maxiterations": 1000,
     }
 
 
@@ -422,8 +439,9 @@ if __name__ == "__main__":
         CYLINDER_RADIUS,
         inflow_ramp_time=1.0,
     )
+    solver.visualize_boundary_conditions()
     solver.buildSolutionScheme(
-        solverParameters, solver_types=[("istl", "gmres"), ("istl", "cg"), ("istl", "cg")]
+        solverParameters, solver_types=[("petsc", "gmres"), ("petsc", "cg"), ("petsc", "cg")]
     )
     # solver.buildSolutionsPoiseuille()
     results = solver.solve(T=T, plot_results=True)
