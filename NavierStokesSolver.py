@@ -31,6 +31,8 @@ from tqdm import tqdm
 import pygmsh
 import dune.fem as fem
 
+from matplotlib import pyplot as plt
+
 fem.threading.useMax()
 
 
@@ -68,8 +70,8 @@ class NavierStokesSolver:
 
     def buildForms(self, initial_p_lambda = None):
         dim = self.gridView.dimension
-        self.velocitySpace = lagrange(self.gridView, order=2, dimRange=dim)
-        self.pressureSpace = lagrange(self.gridView, order=1)
+        self.velocitySpace = lagrange(self.gridView, order=2, dimRange=dim, storage="petsc")
+        self.pressureSpace = lagrange(self.gridView, order=1, storage="petsc")
 
         u = TrialFunction(self.velocitySpace)
         v = TestFunction(self.velocitySpace)
@@ -174,17 +176,17 @@ class NavierStokesSolver:
 
         self.scheme_1 = solutionScheme(
             [self.form_1 == 0, *self.dbc_velocity],
-            parameters=solverParameters,
+            parameters=solverParameters["solver_1"],
             solver=solver_types[0],
         )
         self.scheme_2 = solutionScheme(
             [self.form_2 == 0, *self.dbc_pressure],
-            parameters=solverParameters,
+            parameters=solverParameters["solver_2"],
             solver=solver_types[1],
         )
         self.scheme_3 = solutionScheme(
             [self.form_3 == 0, *self.dbc_velocity],
-            parameters=solverParameters,
+            parameters=solverParameters["solver_3"],
             solver=solver_types[2],
         )
 
@@ -201,6 +203,12 @@ class NavierStokesSolver:
         total_steps = max(int(round(T / self.dt.value)), 1)
         steady_time = None
         error_history = []
+
+        if plot_results:
+            plt.ion()
+            fig = plt.figure(figsize=(12, 5))
+            plt.show(block=False)
+
         for step in tqdm(range(1, total_steps + 1)):
             t_new = step * self.dt.value
             if self.inflow_factor is not None:
@@ -256,10 +264,20 @@ class NavierStokesSolver:
             self.u_prev.assign(self.u_h)
             t += self.dt.value
 
-            # plot every 5 percent
-            if plot_results and step % max(total_steps // 50, 1) == 0:
-                self.u_h.plot()
-                self.p_h.plot()
+            if plot_results and step % max(total_steps // 100, 1) == 0:
+                fig.clf()   # clear existing figure instead of opening new windows
+
+                self.u_h.plot(figure=(fig, 121))
+                self.p_h.plot(figure=(fig, 122))
+
+                fig.suptitle(f"step={step}, t={t:.4f}")
+                fig.canvas.draw_idle()
+                fig.canvas.flush_events()
+                plt.pause(0.001)
+        
+        if plot_results:
+            plt.ioff()
+            plt.show()
 
         self.u_h.plot()
         self.p_h.plot()
@@ -378,20 +396,44 @@ if __name__ == "__main__":
     CYLINDER_RADIUS = 0.05
     CYLINDER_T = 5.0
     CYLINDER_DT = CYLINDER_T / 1000
-    CYLINDER_MESH_SIZE = 0.025
+    CYLINDER_MESH_SIZE = 0.045
     INFLOW_RAMP_TIME = 1.0
 
     steady_tolerance = 1e-8
     plot_results = True
     threading.use = 1
 
-    solverParameters = {
+    solver_1_Parameters = {
         "nonlinear.tolerance": 1e-8,
         "nonlinear.verbose": False,
         "linear.tolerance": 1e-9,
         "linear.preconditioning.method": "ilu",
         "linear.verbose": False,
-        "linear.maxiterations": 300,
+        "linear.maxiterations": 1000,
+    }
+
+    solver_2_Parameters = {
+        "nonlinear.tolerance": 1e-8,
+        "nonlinear.verbose": False,
+        "linear.tolerance": 1e-9,
+        "linear.preconditioning.method": "ilu",
+        "linear.verbose": False,
+        "linear.maxiterations": 1000,
+    }
+
+    solver_3_Parameters = {
+        "nonlinear.tolerance": 1e-8,
+        "nonlinear.verbose": False,
+        "linear.tolerance": 1e-9,
+        "linear.preconditioning.method": "ilu",
+        "linear.verbose": False,
+        "linear.maxiterations": 1000,
+    }
+
+    solverParameters = {
+        "solver_1": solver_1_Parameters,
+        "solver_2": solver_2_Parameters,    
+        "solver_3": solver_3_Parameters
     }
 
 
@@ -422,8 +464,10 @@ if __name__ == "__main__":
         CYLINDER_RADIUS,
         inflow_ramp_time=1.0,
     )
+
+    solver_lib = "petsc"
     solver.buildSolutionScheme(
-        solverParameters, solver_types=[("istl", "gmres"), ("istl", "cg"), ("istl", "cg")]
+        solverParameters, solver_types=[(solver_lib, "gmres"), (solver_lib, "cg"), (solver_lib, "cg")]
     )
     # solver.buildSolutionsPoiseuille()
     results = solver.solve(T=T, plot_results=True)
