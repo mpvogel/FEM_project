@@ -279,20 +279,20 @@ class NavierStokesSolver:
 
             if plot_results and step % max(total_steps // 100, 1) == 0:
                 os.makedirs("out", exist_ok=True)
+                vtk_basename = (
+                    f"out/solution_dt_{self.dt.value:.4f}_mesh_resolution_{self.gridView.size(1)}"
+                )
+
                 self.gridView.writeVTK(
-                    f"out/solution_{step:04d}_dt_{self.dt.value:.4f}_mesh_resolution_{self.gridView.size(1)}",
+                    vtk_basename,
                     pointdata={"velocity": self.u_h, "pressure": self.p_h},
+                    number=step,
                 )
 
                 fig.clf()   # clear existing figure instead of opening new windows
 
-                # self.u_h.plot(figure=(fig, 121))
-                # self.p_h.plot(figure=(fig, 122))
-                os.makedirs("out", exist_ok=True)
-                self.gridView.writeVTK(
-                    f"out/solution_{step:04d}_dt_{self.dt.value:.4f}_mesh_resolution_{self.gridView.size(1)}",
-                    pointdata={"velocity": self.u_h, "pressure": self.p_h},
-                )
+                self.u_h.plot(figure=(fig, 121))
+                self.p_h.plot(figure=(fig, 122))
 
                 fig.suptitle(f"step={step}, t={t:.4f}")
                 fig.canvas.draw_idle()
