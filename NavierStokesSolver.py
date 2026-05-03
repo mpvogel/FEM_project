@@ -288,6 +288,19 @@ class NavierStokesSolver:
                     pointdata={"velocity": self.u_h, "pressure": self.p_h},
                     number=step,
                 )
+                fig.clf()   # clear existing figure instead of opening new windows
+
+                self.u_h.plot(figure=(fig, 121))
+                self.p_h.plot(figure=(fig, 122))
+
+                fig.suptitle(f"step={step}, t={t:.4f}")
+                fig.canvas.draw_idle()
+                fig.canvas.flush_events()
+                plt.pause(0.001)
+        
+        if plot_results:
+            plt.ioff()
+            plt.show()
 
                 fig.clf()   # clear existing figure instead of opening new windows
 
@@ -487,7 +500,6 @@ if __name__ == "__main__":
         CYLINDER_RADIUS,
         inflow_ramp_time=1.0,
     )
-    solver.visualize_boundary_conditions()
 
     solver_lib = "petsc"
     solver.visualize_boundary_conditions()
