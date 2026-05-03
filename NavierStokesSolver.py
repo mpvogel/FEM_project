@@ -3,6 +3,7 @@ from dune.alugrid import aluConformGrid as leafGridView
 from dune.fem import integrate, threading
 from dune.fem.view import adaptiveLeafGridView
 from dune.fem.space import lagrange
+from dune.common import comm
 from dune.fem.scheme import galerkin as solutionScheme
 from math import sqrt
 from ufl import (
@@ -34,8 +35,15 @@ import dune.fem as fem
 
 from matplotlib import pyplot as plt
 
-fem.threading.useMax()
+# fem.threading.useMax()
+fem.threading.use = 1
 
+if comm.rank == 0:
+    print("Running on master process.")
+else:
+    print(f"Running on worker process with rank {comm.rank}.")
+
+is_root = comm.rank == 0
 
 class NavierStokesSolver:
     def __init__(
@@ -222,7 +230,21 @@ class NavierStokesSolver:
             fig = plt.figure(figsize=(12, 5))
             plt.show(block=False)
 
-        for step in tqdm(range(1, total_steps + 1)):
+        # init vtk writer:
+        os.makedirs("out", exist_ok=True)
+        vtk_basename = f"out/solution_dt_{self.dt.value:.4f}"
+
+        vtkwriter = self.gridView.sequencedVTK(
+            vtk_basename,
+            pointdata={"velocity": self.u_h, "pressure": self.p_h},
+            subsampling=0,
+        )
+
+        iterator = range(1, total_steps + 1)
+        if is_root:
+            iterator = tqdm(iterator)
+
+        for step in iterator:
             t_new = step * self.dt.value
             if self.inflow_factor is not None:
                 self.inflow_factor.value = min(1.0, t_new / self.inflow_ramp_time)
@@ -277,30 +299,25 @@ class NavierStokesSolver:
             self.u_prev.assign(self.u_h)
             t += self.dt.value
 
-            if plot_results and step % max(total_steps // 100, 1) == 0:
-                os.makedirs("out", exist_ok=True)
-                vtk_basename = (
-                    f"out/solution_dt_{self.dt.value:.4f}_mesh_resolution_{self.gridView.size(1)}"
-                )
+            if step % max(total_steps // 100, 1) == 0:
+                # Write VTK file for visualization in Paraview
+                vtkwriter()
 
-                self.gridView.writeVTK(
-                    vtk_basename,
-                    pointdata={"velocity": self.u_h, "pressure": self.p_h},
-                    number=step,
-                )
-                fig.clf()   # clear existing figure instead of opening new windows
+                if plot_results:
+                    fig.clf()   # clear existing figure instead of opening new windows
 
-                self.u_h.plot(figure=(fig, 121))
-                self.p_h.plot(figure=(fig, 122))
+                    self.u_h.plot(figure=(fig, 121))
+                    self.p_h.plot(figure=(fig, 122))
 
-                fig.suptitle(f"step={step}, t={t:.4f}")
-                fig.canvas.draw_idle()
-                fig.canvas.flush_events()
-                plt.pause(0.001)
+                    fig.suptitle(f"step={step}, t={t:.4f}")
+                    fig.canvas.draw_idle()
+                    fig.canvas.flush_events()
+                    plt.pause(0.001)
         
         if plot_results:
             plt.ioff()
             plt.show()
+
         self.u_h.plot()
         self.p_h.plot()
 
@@ -429,7 +446,7 @@ if __name__ == "__main__":
         "nonlinear.tolerance": 1e-8,
         "nonlinear.verbose": False,
         "linear.tolerance": 1e-9,
-        "linear.preconditioning.method": "ilu",
+        "linear.preconditioning.method": "jacobi",
         "linear.verbose": False,
         "linear.maxiterations": 1000,
     }
@@ -438,7 +455,7 @@ if __name__ == "__main__":
         "nonlinear.tolerance": 1e-8,
         "nonlinear.verbose": False,
         "linear.tolerance": 1e-9,
-        "linear.preconditioning.method": "ilu",
+        "linear.preconditioning.method": "none",
         "linear.verbose": False,
         "linear.maxiterations": 1000,
     }
@@ -447,7 +464,7 @@ if __name__ == "__main__":
         "nonlinear.tolerance": 1e-8,
         "nonlinear.verbose": False,
         "linear.tolerance": 1e-9,
-        "linear.preconditioning.method": "ilu",
+        "linear.preconditioning.method": "none",
         "linear.verbose": False,
         "linear.maxiterations": 1000,
     }
@@ -493,4 +510,4 @@ if __name__ == "__main__":
         solverParameters, solver_types=[(solver_lib, "gmres"), (solver_lib, "cg"), (solver_lib, "cg")]
     )
     # solver.buildSolutionsPoiseuille()
-    results = solver.solve(T=T, plot_results=True)
+    results = solver.solve(T=T, plot_results=False)
