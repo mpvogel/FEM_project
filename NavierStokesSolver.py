@@ -1,4 +1,3 @@
-# type: ignore
 from dune.grid import cartesianDomain, reader
 from dune.alugrid import aluConformGrid as leafGridView
 from dune.fem import integrate, threading
@@ -25,8 +24,10 @@ from ufl import (
 )
 from dune.ufl import Constant, DirichletBC
 # from dune.fem.function import boundaryFunction
+from dune.fem.function import gridFunction
 from gmsh2dgf import gmsh2DGF as mesh2DGF
 
+import os
 from tqdm import tqdm
 import pygmsh
 import dune.fem as fem
@@ -164,6 +165,18 @@ class NavierStokesSolver:
         # Neumann
         self.form_1 += - dot(self.mu * dot(nabla_grad(self.u), self.n) - self.p_prev * self.n, self.v) * ds(2)
 
+    def visualize_boundary_conditions(self):
+        @gridFunction(self.gridView, order=0, name="boundary_ids")
+        def bnd(element, x):
+        # Iterate over all intersections (edges in 2D) of the current element
+            for intersection in self.gridView.intersections(element):
+                if intersection.boundary:
+                    # Return the ID of the first boundary edge we find for this element
+                    return intersection.boundarySegmentIndex
+            return 0 # Interior elements get 0
+
+        bnd.plot()
+
     def buildSolutionScheme(
         self,
         solverParameters,
@@ -265,6 +278,16 @@ class NavierStokesSolver:
             t += self.dt.value
 
             if plot_results and step % max(total_steps // 100, 1) == 0:
+                os.makedirs("out", exist_ok=True)
+                vtk_basename = (
+                    f"out/solution_dt_{self.dt.value:.4f}_mesh_resolution_{self.gridView.size(1)}"
+                )
+
+                self.gridView.writeVTK(
+                    vtk_basename,
+                    pointdata={"velocity": self.u_h, "pressure": self.p_h},
+                    number=step,
+                )
                 fig.clf()   # clear existing figure instead of opening new windows
 
                 self.u_h.plot(figure=(fig, 121))
@@ -279,6 +302,19 @@ class NavierStokesSolver:
             plt.ioff()
             plt.show()
 
+                fig.clf()   # clear existing figure instead of opening new windows
+
+                self.u_h.plot(figure=(fig, 121))
+                self.p_h.plot(figure=(fig, 122))
+
+                fig.suptitle(f"step={step}, t={t:.4f}")
+                fig.canvas.draw_idle()
+                fig.canvas.flush_events()
+                plt.pause(0.001)
+        
+        if plot_results:
+            plt.ioff()
+            plt.show()
         self.u_h.plot()
         self.p_h.plot()
 
@@ -466,6 +502,7 @@ if __name__ == "__main__":
     )
 
     solver_lib = "petsc"
+    solver.visualize_boundary_conditions()
     solver.buildSolutionScheme(
         solverParameters, solver_types=[(solver_lib, "gmres"), (solver_lib, "cg"), (solver_lib, "cg")]
     )
