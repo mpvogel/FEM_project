@@ -301,20 +301,6 @@ class NavierStokesSolver:
         if plot_results:
             plt.ioff()
             plt.show()
-
-                fig.clf()   # clear existing figure instead of opening new windows
-
-                self.u_h.plot(figure=(fig, 121))
-                self.p_h.plot(figure=(fig, 122))
-
-                fig.suptitle(f"step={step}, t={t:.4f}")
-                fig.canvas.draw_idle()
-                fig.canvas.flush_events()
-                plt.pause(0.001)
-        
-        if plot_results:
-            plt.ioff()
-            plt.show()
         self.u_h.plot()
         self.p_h.plot()
 
