@@ -1,3 +1,4 @@
+import dune.fem as fem
 from dune.grid import cartesianDomain, reader
 from dune.alugrid import aluConformGrid as leafGridView
 from dune.fem import integrate, threading
@@ -24,16 +25,19 @@ from ufl import (
     dot,
 )
 from dune.ufl import Constant, DirichletBC
-# from dune.fem.function import boundaryFunction
 from dune.fem.function import gridFunction
 from gmsh2dgf import gmsh2DGF as mesh2DGF
-
 import os
 from tqdm import tqdm
 import pygmsh
-import dune.fem as fem
 
 from matplotlib import pyplot as plt
+
+from mpi4py import MPI
+from dune.grid import reader
+
+mpi_comm = MPI.COMM_WORLD
+rank = mpi_comm.Get_rank()
 
 # fem.threading.useMax()
 fem.threading.use = 1
@@ -43,7 +47,6 @@ if comm.rank == 0:
 else:
     print(f"Running on worker process with rank {comm.rank}.")
 
-is_root = comm.rank == 0
 
 class NavierStokesSolver:
     def __init__(
@@ -241,7 +244,7 @@ class NavierStokesSolver:
         )
 
         iterator = range(1, total_steps + 1)
-        if is_root:
+        if comm.rank == 0:
             iterator = tqdm(iterator)
 
         for step in iterator:
@@ -383,35 +386,39 @@ class NavierStokesSolver:
 
     def create_karman_gridView(
         self, mesh_size, cylinder_center, cylinder_r, coarse=False
-    ):
-        outside_size = 0.08 if coarse else mesh_size
+    ):  
+        dgf = None
+        if comm.rank == 0:
+            outside_size = 0.08 if coarse else mesh_size
 
-        def local_size(x, y):
-            radius2 = (x - cylinder_center[0]) ** 2 + (y - cylinder_center[1]) ** 2
-            return min(0.01 + 0.6 * radius2, outside_size)
+            def local_size(x, y):
+                radius2 = (x - cylinder_center[0]) ** 2 + (y - cylinder_center[1]) ** 2
+                return min(0.01 + 0.6 * radius2, outside_size)
 
-        with pygmsh.occ.Geometry() as geom:
-            geom.set_mesh_size_callback(lambda dim, tag, x, y, z, lc: local_size(x, y))
-            rectangle = geom.add_rectangle([0, 0, 0], self.L, self.H)
-            cylinder = geom.add_disk(
-                [cylinder_center[0], cylinder_center[1], 0.0],
-                cylinder_r,
-            )
-            geom.boolean_difference(rectangle, cylinder)
-            mesh = geom.generate_mesh()
-            points, cells = mesh.points, mesh.cells_dict
-            eps = 0.01 # tolerance
-            # dictionary containing id and a list containing the lower left and upper right corner of the bounding box
-            bndDomain = {1: [[-eps, -eps], [eps, self.H + eps]],  # left
-                        2: [[self.L - eps, -eps], [self.L + eps, self.H + eps]],  # right
-                        3: [[-eps, -eps], [self.L + eps, eps]],  # bottom
-                        4: [[-eps, self.H - eps], [self.L + eps, self.H + eps]],  # top
-                        5: "default"  # hole boundary, which are all other segments not contained in the above bounding boxes
-                        }
+            with pygmsh.occ.Geometry() as geom:
+                geom.set_mesh_size_callback(lambda dim, tag, x, y, z, lc: local_size(x, y))
+                rectangle = geom.add_rectangle([0, 0, 0], self.L, self.H)
+                cylinder = geom.add_disk(
+                    [cylinder_center[0], cylinder_center[1], 0.0],
+                    cylinder_r,
+                )
+                geom.boolean_difference(rectangle, cylinder)
+                mesh = geom.generate_mesh()
+                points, cells = mesh.points, mesh.cells_dict
+                eps = 0.01 # tolerance
+                # dictionary containing id and a list containing the lower left and upper right corner of the bounding box
+                bndDomain = {1: [[-eps, -eps], [eps, self.H + eps]],  # left
+                            2: [[self.L - eps, -eps], [self.L + eps, self.H + eps]],  # right
+                            3: [[-eps, -eps], [self.L + eps, eps]],  # bottom
+                            4: [[-eps, self.H - eps], [self.L + eps, self.H + eps]],  # top
+                            5: "default"  # hole boundary, which are all other segments not contained in the above bounding boxes
+                            }
 
-            # return dgf string which can be read by DGF parser or written to file for later use
-            dgf = mesh2DGF(points, cells, bndDomain=bndDomain, dim=2)
-            domain2d = (reader.dgfString, dgf)
+                # return dgf string which can be read by DGF parser or written to file for later use
+                dgf = mesh2DGF(points, cells, bndDomain=bndDomain, dim=2)
+            
+        dgf = mpi_comm.bcast(dgf, root=0)
+        domain2d = (reader.dgfString, dgf)
         # fig = pyplot.figure()
         # boundaryFunction( gridView2d).plot(gridLines="white",linewidth=2,figure=fig)
         # fig.get_axes()[0].set_facecolor("lightgray")
