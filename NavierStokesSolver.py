@@ -453,7 +453,7 @@ if __name__ == "__main__":
         "nonlinear.tolerance": 1e-8,
         "nonlinear.verbose": False,
         "linear.tolerance": 1e-9,
-        "linear.preconditioning.method": "jacobi",
+        "linear.preconditioning.method": "oas",
         "linear.verbose": False,
         "linear.maxiterations": 1000,
     }
@@ -462,7 +462,8 @@ if __name__ == "__main__":
         "nonlinear.tolerance": 1e-8,
         "nonlinear.verbose": False,
         "linear.tolerance": 1e-9,
-        "linear.preconditioning.method": "none",
+        "linear.preconditioning.method": "pcgamg",
+        "linear.petsc.blockedmode": False,
         "linear.verbose": False,
         "linear.maxiterations": 1000,
     }
@@ -471,7 +472,7 @@ if __name__ == "__main__":
         "nonlinear.tolerance": 1e-8,
         "nonlinear.verbose": False,
         "linear.tolerance": 1e-9,
-        "linear.preconditioning.method": "none",
+        "linear.preconditioning.method": "oas",
         "linear.verbose": False,
         "linear.maxiterations": 1000,
     }
@@ -512,9 +513,9 @@ if __name__ == "__main__":
     )
 
     solver_lib = "petsc"
-    solver.visualize_boundary_conditions()
+    #solver.visualize_boundary_conditions()
     solver.buildSolutionScheme(
         solverParameters, solver_types=[(solver_lib, "gmres"), (solver_lib, "cg"), (solver_lib, "cg")]
     )
     # solver.buildSolutionsPoiseuille()
-    results = solver.solve(T=T, plot_results=False)
+    results = solver.solve(T=T, plot_results=True)
