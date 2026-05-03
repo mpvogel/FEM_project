@@ -277,17 +277,13 @@ class NavierStokesSolver:
             self.u_prev.assign(self.u_h)
             t += self.dt.value
 
-            # plot every 5 percent
-            if plot_results and step % max(total_steps // 50, 1) == 0:
-                # self.u_h.plot()
-                # self.p_h.plot()
+            if plot_results and step % max(total_steps // 100, 1) == 0:
                 os.makedirs("out", exist_ok=True)
                 self.gridView.writeVTK(
                     f"out/solution_{step:04d}_dt_{self.dt.value:.4f}_mesh_resolution_{self.gridView.size(1)}",
                     pointdata={"velocity": self.u_h, "pressure": self.p_h},
                 )
 
-            if plot_results and step % max(total_steps // 100, 1) == 0:
                 fig.clf()   # clear existing figure instead of opening new windows
 
                 # self.u_h.plot(figure=(fig, 121))
@@ -302,7 +298,7 @@ class NavierStokesSolver:
                 fig.canvas.draw_idle()
                 fig.canvas.flush_events()
                 plt.pause(0.001)
-
+        
         if plot_results:
             plt.ioff()
             plt.show()
@@ -459,7 +455,7 @@ if __name__ == "__main__":
 
     solverParameters = {
         "solver_1": solver_1_Parameters,
-        "solver_2": solver_2_Parameters,
+        "solver_2": solver_2_Parameters,    
         "solver_3": solver_3_Parameters
     }
 
