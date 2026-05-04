@@ -1,8 +1,10 @@
+import dune.fem as fem
+import dune.fem
 from dune.grid import cartesianDomain, reader
 from dune.alugrid import aluConformGrid as leafGridView
-from dune.fem import integrate, threading
+from dune.fem import integrate, threading, mark, adapt, loadBalance
 from dune.fem.view import adaptiveLeafGridView
-from dune.fem.space import lagrange
+from dune.fem.space import lagrange, finiteVolume
 from dune.common import comm
 from dune.fem.scheme import galerkin as solutionScheme
 from math import sqrt
@@ -22,11 +24,13 @@ from ufl import (
     as_vector,
     outer,
     dot,
+    CellVolume,
 )
 from dune.ufl import Constant, DirichletBC
 from dune.fem.function import gridFunction
 from gmsh2dgf import gmsh2DGF as mesh2DGF
 import os
+import numpy as np
 from tqdm import tqdm
 import pygmsh
 
@@ -216,7 +220,15 @@ class NavierStokesSolver:
         self.solution_u = as_vector([4 * self.x[1] * (1 - self.x[1]), 0])
         self.solution_p = 8 * (1 - self.x[0])
 
-    def solve(self, T=10.0, plot_results=False):
+    def adapt(self, indicator, maxLevel, expr):
+        indicator.interpolate(expr)
+        scalar = np.max(indicator.as_numpy) - np.min(indicator.as_numpy)
+
+        dune.fem.mark(indicator, refineTolerance=0.75 * scalar, coarsenTolerance=0.1*0.75 * scalar, maxLevel=maxLevel)
+        dune.fem.adapt([self.u_h, self.p_h, self.u_prev, self.p_prev, self.u_prelim])
+        dune.fem.loadBalance([self.u_h, self.p_h, self.u_prev, self.p_prev, self.u_prelim])
+
+    def solve(self, T=10.0, plot_results=False, adaptive = False, adaptStep=5, maxLevel=5):
         if self.scheme_1 is None or self.scheme_2 is None or self.scheme_3 is None:
             raise ValueError("Solution schemes must be built before solving.")
 
@@ -225,6 +237,12 @@ class NavierStokesSolver:
         total_steps = max(int(round(T / self.dt.value)), 1)
         steady_time = None
         error_history = []
+
+        fvspc = finiteVolume(self.gridView, dimRange=1)
+        indicator = fvspc.function(name="indicator")
+
+        omega = grad(self.u_h[1])[0] - grad(self.u_h[0])[1]  # curl of u
+        expr = sqrt(CellVolume(self.gridView) * omega * omega)  # l2 norm of the curl
 
         if plot_results:
             plt.ion()
@@ -299,6 +317,8 @@ class NavierStokesSolver:
             self.p_prev.assign(self.p_h)
             self.u_prev.assign(self.u_h)
             t += self.dt.value
+            
+                       
 
             if step % max(total_steps // 100, 1) == 0:
                 # Write VTK file for visualization in Paraview
@@ -314,7 +334,10 @@ class NavierStokesSolver:
                     fig.canvas.draw_idle()
                     fig.canvas.flush_events()
                     plt.pause(0.001)
-        
+
+            if adaptive and step % adaptStep == 0:
+                self.adapt(indicator, maxLevel, indicator, expr)
+
         if plot_results:
             plt.ioff()
             plt.show()
