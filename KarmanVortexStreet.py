@@ -32,4 +32,4 @@ if __name__ == "__main__":
     solver.buildSolutionScheme(
         solverParameters, solver_types=[(solver_lib, "gmres"), (solver_lib, "cg"), (solver_lib, "cg")]
     )
-    results = solver.solve(T=T, plot_results=False)
+    results = solver.solve(T=T, plot_results=True, adaptive=True, maxLevel=solver.gridView.hierarchicalGrid.maxLevel)
