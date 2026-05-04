@@ -1,13 +1,13 @@
-import dune.fem as fem
 import dune.fem
 from dune.grid import cartesianDomain, reader
 from dune.alugrid import aluConformGrid as leafGridView
-from dune.fem import integrate, threading, mark, adapt, loadBalance
+from dune.fem import integrate, threading
 from dune.fem.view import adaptiveLeafGridView
 from dune.fem.space import lagrange, finiteVolume
 from dune.common import comm
 from dune.fem.scheme import galerkin as solutionScheme
-from math import sqrt as math_sqrt
+from dune.fem.function import gridFunction
+from dune.ufl import Constant, DirichletBC
 from ufl import (
     TrialFunction,
     TestFunction,
@@ -27,24 +27,20 @@ from ufl import (
     sqrt as ufl_sqrt,
     CellVolume,
 )
-from dune.ufl import Constant, DirichletBC
-from dune.fem.function import gridFunction
+from math import sqrt as math_sqrt
 from gmsh2dgf import gmsh2DGF as mesh2DGF
 import os
 import numpy as np
 from tqdm import tqdm
 import pygmsh
-
 from matplotlib import pyplot as plt
-
 from mpi4py import MPI
-from dune.grid import reader
 
 mpi_comm = MPI.COMM_WORLD
 rank = mpi_comm.Get_rank()
 
 # fem.threading.useMax()
-fem.threading.use = 1
+threading.use = 1
 
 if comm.rank == 0:
     print("Running on master process.")
@@ -54,7 +50,7 @@ else:
 
 class NavierStokesSolver:
     def __init__(
-        self, dt_value: float = 0.01, H: float = 1, L: float = 1, rho_value=1, mu_value=1
+        self, dt_value: float, H: float, L: float, rho_value: float, mu_value: float
     ):
         self.L = L
         self.H = H
@@ -159,11 +155,8 @@ class NavierStokesSolver:
 
     def buildKarmanBC(
         self,
-        cyclinder_c,
-        cylinder_r,
         inflow_ramp_time=1.0,
     ):
-        # TODO - add option for time-dependent ramp function bc bc are not consitsten in the beginning.
         self.inflow_factor = Constant(0.0, "inflow_factor")
         self.inflow_ramp_time = inflow_ramp_time
         inflow_profile = as_vector([self.inflow_factor*6*self.x[1]*(self.H - self.x[1])/self.H**2, 0.0])
@@ -245,12 +238,10 @@ class NavierStokesSolver:
         fvspc = finiteVolume(self.gridView, dimRange=1)
         indicator = fvspc.function(name="indicator")
 
-        # omega = grad(self.u_h[1])[0] - grad(self.u_h[0])[1]  # curl of u
-        # expr = ufl_sqrt(omega * omega)  # vorticity magnitude used as an adaptive indicator
-
-        omega = self.u_h[1].dx(0) - self.u_h[0].dx(1)
-
-        expr = ufl_sqrt(CellVolume(self.velocitySpace) * omega * omega)
+        omega = grad(self.u_h[1])[0] - grad(self.u_h[0])[1]  # curl of u
+        expr = ufl_sqrt(omega * omega)  # vorticity magnitude used as an adaptive indicator
+        # omega = self.u_h[1].dx(0) - self.u_h[0].dx(1)
+        # expr = ufl_sqrt(CellVolume(self.velocitySpace) * omega * omega)
 
         if plot_results:
             plt.ion()
@@ -273,6 +264,7 @@ class NavierStokesSolver:
 
         for step in iterator:
             t_new = step * self.dt.value
+
             if self.inflow_factor is not None:
                 self.inflow_factor.value = min(1.0, t_new / self.inflow_ramp_time)
 
@@ -458,36 +450,16 @@ class NavierStokesSolver:
         self.gridView = gridView
 
 
-if __name__ == "__main__":
-    L = 1.0
-    H = 1.0
-    T = 5.0
-    DT = 0.001
-    STRUCTURED_CELLS = [16, 16]
-    UNSTRUCTURED_MESH_SIZE = 0.08
-    CYLINDER_L = 2.2
-    CYLINDER_H = 0.41
-    CYLINDER_CENTER = (0.2, 0.2)
-    CYLINDER_RADIUS = 0.05
-    CYLINDER_T = 5.0
-    CYLINDER_DT = CYLINDER_T / 1000
-    CYLINDER_MESH_SIZE = 0.045
-    INFLOW_RAMP_TIME = 1.0
-
-    steady_tolerance = 1e-8
-    plot_results = True
-    threading.use = 1
-
-    solver_1_Parameters = {
+solverParameters = {
+        "solver_1": {
         "nonlinear.tolerance": 1e-8,
         "nonlinear.verbose": False,
         "linear.tolerance": 1e-9,
         "linear.preconditioning.method": "oas",
         "linear.verbose": False,
         "linear.maxiterations": 1000,
-    }
-
-    solver_2_Parameters = {
+    },
+    "solver_2": {
         "nonlinear.tolerance": 1e-8,
         "nonlinear.verbose": False,
         "linear.tolerance": 1e-9,
@@ -495,9 +467,8 @@ if __name__ == "__main__":
         "linear.petsc.blockedmode": False,
         "linear.verbose": False,
         "linear.maxiterations": 1000,
-    }
-
-    solver_3_Parameters = {
+    },    
+    "solver_3":  {
         "nonlinear.tolerance": 1e-8,
         "nonlinear.verbose": False,
         "linear.tolerance": 1e-9,
@@ -505,46 +476,4 @@ if __name__ == "__main__":
         "linear.verbose": False,
         "linear.maxiterations": 1000,
     }
-
-    solverParameters = {
-        "solver_1": solver_1_Parameters,
-        "solver_2": solver_2_Parameters,    
-        "solver_3": solver_3_Parameters
-    }
-
-
-    # TASK A structured mesh
-    # solver = NavierStokesSolver(dt_value=DT, H=H, L=L)
-    # solver.create_task_A_gridview(STRUCTURED_CELLS)
-
-    # TASK B unstructured mesh
-    # solver = NavierStokesSolver(dt_value=DT, H=H, L=L)
-    # solver.create_task_B_gridview(UNSTRUCTURED_MESH_SIZE)
-
-    # TASK C Karman vortex street
-    L = CYLINDER_L
-    H = CYLINDER_H
-    solver = NavierStokesSolver(dt_value=DT, H=H, L=L, mu_value= 1e-3, rho_value = 1)
-    solver.create_karman_gridView(
-        mesh_size=CYLINDER_MESH_SIZE,
-        cylinder_center=CYLINDER_CENTER,
-        cylinder_r=CYLINDER_RADIUS,
-        coarse=False,
-    )
-
-
-    solver.buildForms()
-    # solver.buildPoiseuilleFlowBC()
-    solver.buildKarmanBC(
-        CYLINDER_CENTER,
-        CYLINDER_RADIUS,
-        inflow_ramp_time=1.0,
-    )
-
-    solver_lib = "petsc"
-    #solver.visualize_boundary_conditions()
-    solver.buildSolutionScheme(
-        solverParameters, solver_types=[(solver_lib, "gmres"), (solver_lib, "cg"), (solver_lib, "cg")]
-    )
-    # solver.buildSolutionsPoiseuille()
-    results = solver.solve(T=T, plot_results=True, adaptive=True, maxLevel=solver.gridView.hierarchicalGrid.maxLevel)
+}

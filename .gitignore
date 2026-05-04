@@ -3,6 +3,7 @@ __pycache__
 .codex
 .vscode
 out
+out_cluster
 .secret
 *.png
 *.log
