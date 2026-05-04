@@ -7,7 +7,7 @@ from dune.fem.view import adaptiveLeafGridView
 from dune.fem.space import lagrange, finiteVolume
 from dune.common import comm
 from dune.fem.scheme import galerkin as solutionScheme
-from math import sqrt
+from math import sqrt as math_sqrt
 from ufl import (
     TrialFunction,
     TestFunction,
@@ -24,6 +24,7 @@ from ufl import (
     as_vector,
     outer,
     dot,
+    sqrt as ufl_sqrt,
     CellVolume,
 )
 from dune.ufl import Constant, DirichletBC
@@ -223,6 +224,8 @@ class NavierStokesSolver:
     def adapt(self, indicator, maxLevel, expr):
         indicator.interpolate(expr)
         scalar = np.max(indicator.as_numpy) - np.min(indicator.as_numpy)
+        if scalar <= 0:
+            return
 
         dune.fem.mark(indicator, refineTolerance=0.75 * scalar, coarsenTolerance=0.1*0.75 * scalar, maxLevel=maxLevel)
         dune.fem.adapt([self.u_h, self.p_h, self.u_prev, self.p_prev, self.u_prelim])
@@ -241,8 +244,12 @@ class NavierStokesSolver:
         fvspc = finiteVolume(self.gridView, dimRange=1)
         indicator = fvspc.function(name="indicator")
 
-        omega = grad(self.u_h[1])[0] - grad(self.u_h[0])[1]  # curl of u
-        expr = sqrt(CellVolume(self.gridView) * omega * omega)  # l2 norm of the curl
+        # omega = grad(self.u_h[1])[0] - grad(self.u_h[0])[1]  # curl of u
+        # expr = ufl_sqrt(omega * omega)  # vorticity magnitude used as an adaptive indicator
+
+        omega = self.u_h[1].dx(0) - self.u_h[0].dx(1)
+
+        expr = ufl_sqrt(CellVolume(self.velocitySpace) * omega * omega)
 
         if plot_results:
             plt.ion()
@@ -273,14 +280,14 @@ class NavierStokesSolver:
             self.scheme_3.solve(target=self.u_h)
 
             if self.solution_u is not None or self.solution_p is not None:
-                velocity_l2_error = sqrt(
+                velocity_l2_error = math_sqrt(
                     integrate(
                         inner(self.u_h - self.solution_u, self.u_h - self.solution_u),
                         gridView=self.gridView,
                         order=6,
                     )
                 )
-                pressure_l2_error = sqrt(
+                pressure_l2_error = math_sqrt(
                     integrate(
                         (self.p_h - self.solution_p) ** 2,
                         gridView=self.gridView,
@@ -288,21 +295,21 @@ class NavierStokesSolver:
                     )
                 )
 
-            velocity_update_l2 = sqrt(
+            velocity_update_l2 = math_sqrt(
                 integrate(
                     inner(self.u_h - self.u_prev, self.u_h - self.u_prev),
                     gridView=self.gridView,
                     order=6,
                 )
             )
-            pressure_update_l2 = sqrt(
+            pressure_update_l2 = math_sqrt(
                 integrate(
                     (self.p_h - self.p_prev) ** 2,
                     gridView=self.gridView,
                     order=4,
                 )
             )
-            temporal_update_l2 = sqrt(velocity_update_l2**2 + pressure_update_l2**2)
+            temporal_update_l2 = math_sqrt(velocity_update_l2**2 + pressure_update_l2**2)
             # error_history.append(
             #     (
             #         t + self.dt.value,
@@ -336,7 +343,7 @@ class NavierStokesSolver:
                     plt.pause(0.001)
 
             if adaptive and step % adaptStep == 0:
-                self.adapt(indicator, maxLevel, indicator, expr)
+                self.adapt(indicator, maxLevel, expr)
 
         if plot_results:
             plt.ioff()
