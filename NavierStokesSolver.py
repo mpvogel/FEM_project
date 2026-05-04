@@ -77,12 +77,15 @@ class NavierStokesSolver:
         self.scheme_3 = None
         self.solution_p = None
         self.solution_u = None
+        self.solution_provided = False
         self.inflow_factor = None
         self.inflow_ramp = None
 
-    def buildForms(self, initial_p_lambda = None):
+    def buildForms(self, initial_p_lambda=None):
         dim = self.gridView.dimension
-        self.velocitySpace = lagrange(self.gridView, order=2, dimRange=dim, storage="petsc")
+        self.velocitySpace = lagrange(
+            self.gridView, order=2, dimRange=dim, storage="petsc"
+        )
         self.pressureSpace = lagrange(self.gridView, order=1, storage="petsc")
 
         u = TrialFunction(self.velocitySpace)
@@ -106,7 +109,9 @@ class NavierStokesSolver:
 
         self.p_h = self.pressureSpace.function(name="p_h")
         if initial_p_lambda is not None:
-            self.p_prev = self.pressureSpace.interpolate(initial_p_lambda, name="p_prev")
+            self.p_prev = self.pressureSpace.interpolate(
+                initial_p_lambda, name="p_prev"
+            )
         else:
             self.p_prev = self.pressureSpace.function(name="p_prev")
 
@@ -151,7 +156,9 @@ class NavierStokesSolver:
         left_id = 1
         right_id = 2
 
-        self.form_1 += - dot(self.mu * dot(nabla_grad(self.u), self.n) - self.p_prev * self.n, self.v) * ds((left_id, right_id))
+        self.form_1 += -dot(
+            self.mu * dot(nabla_grad(self.u), self.n) - self.p_prev * self.n, self.v
+        ) * ds((left_id, right_id))
 
     def buildKarmanBC(
         self,
@@ -159,7 +166,9 @@ class NavierStokesSolver:
     ):
         self.inflow_factor = Constant(0.0, "inflow_factor")
         self.inflow_ramp_time = inflow_ramp_time
-        inflow_profile = as_vector([self.inflow_factor*6*self.x[1]*(self.H - self.x[1])/self.H**2, 0.0])
+        inflow_profile = as_vector(
+            [self.inflow_factor * 6 * self.x[1] * (self.H - self.x[1]) / self.H**2, 0.0]
+        )
         self.dbc_velocity = [
             DirichletBC(self.velocitySpace, inflow_profile, 1),
             DirichletBC(self.velocitySpace, [0, 0], 3),
@@ -171,17 +180,19 @@ class NavierStokesSolver:
         ]
 
         # Neumann
-        self.form_1 += - dot(self.mu * dot(nabla_grad(self.u), self.n) - self.p_prev * self.n, self.v) * ds(2)
+        self.form_1 += -dot(
+            self.mu * dot(nabla_grad(self.u), self.n) - self.p_prev * self.n, self.v
+        ) * ds(2)
 
     def visualize_boundary_conditions(self):
         @gridFunction(self.gridView, order=0, name="boundary_ids")
         def bnd(element, x):
-        # Iterate over all intersections (edges in 2D) of the current element
+            # Iterate over all intersections (edges in 2D) of the current element
             for intersection in self.gridView.intersections(element):
                 if intersection.boundary:
                     # Return the ID of the first boundary edge we find for this element
                     return intersection.boundarySegmentIndex
-            return 0 # Interior elements get 0
+            return 0  # Interior elements get 0
 
         bnd.plot()
 
@@ -214,6 +225,7 @@ class NavierStokesSolver:
     def buildSolutionsPoiseuille(self):
         self.solution_u = as_vector([4 * self.x[1] * (1 - self.x[1]), 0])
         self.solution_p = 8 * (1 - self.x[0])
+        self.solution_provided = True
 
     def adapt(self, indicator, maxLevel, expr):
         indicator.interpolate(expr)
@@ -221,11 +233,20 @@ class NavierStokesSolver:
         if scalar <= 0:
             return
 
-        dune.fem.mark(indicator, refineTolerance=0.75 * scalar, coarsenTolerance=0.1*0.75 * scalar, maxLevel=maxLevel)
+        dune.fem.mark(
+            indicator,
+            refineTolerance=0.75 * scalar,
+            coarsenTolerance=0.1 * 0.75 * scalar,
+            maxLevel=maxLevel,
+        )
         dune.fem.adapt([self.u_h, self.p_h, self.u_prev, self.p_prev, self.u_prelim])
-        dune.fem.loadBalance([self.u_h, self.p_h, self.u_prev, self.p_prev, self.u_prelim])
+        dune.fem.loadBalance(
+            [self.u_h, self.p_h, self.u_prev, self.p_prev, self.u_prelim]
+        )
 
-    def solve(self, T=10.0, plot_results=False, adaptive = False, adaptStep=5, maxLevel=5):
+    def solve(
+        self, T=10.0, plot_results=False, adaptive=False, adaptStep=5, maxLevel=5
+    ):
         if self.scheme_1 is None or self.scheme_2 is None or self.scheme_3 is None:
             raise ValueError("Solution schemes must be built before solving.")
 
@@ -239,14 +260,14 @@ class NavierStokesSolver:
         indicator = fvspc.function(name="indicator")
 
         omega = grad(self.u_h[1])[0] - grad(self.u_h[0])[1]  # curl of u
-        expr = ufl_sqrt(omega * omega)  # vorticity magnitude used as an adaptive indicator
+        expr = ufl_sqrt(
+            omega * omega
+        )  # vorticity magnitude used as an adaptive indicator
         # omega = self.u_h[1].dx(0) - self.u_h[0].dx(1)
         # expr = ufl_sqrt(CellVolume(self.velocitySpace) * omega * omega)
 
         if plot_results:
-            plt.ion()
-            fig = plt.figure(figsize=(12, 5))
-            plt.show(block=False)
+            fig = self.initialize_visualisation()
 
         # init vtk writer:
         os.makedirs("out", exist_ok=True)
@@ -272,68 +293,21 @@ class NavierStokesSolver:
             self.scheme_2.solve(target=self.p_h)
             self.scheme_3.solve(target=self.u_h)
 
-            if self.solution_u is not None or self.solution_p is not None:
-                velocity_l2_error = math_sqrt(
-                    integrate(
-                        inner(self.u_h - self.solution_u, self.u_h - self.solution_u),
-                        gridView=self.gridView,
-                        order=6,
-                    )
-                )
-                pressure_l2_error = math_sqrt(
-                    integrate(
-                        (self.p_h - self.solution_p) ** 2,
-                        gridView=self.gridView,
-                        order=4,
-                    )
-                )
+            if self.solution_provided:
+                velocity_l2_error, pressure_l2_error = self.calculate_l2_errors()
+                error_history.append((t, velocity_l2_error, pressure_l2_error))
 
-            velocity_update_l2 = math_sqrt(
-                integrate(
-                    inner(self.u_h - self.u_prev, self.u_h - self.u_prev),
-                    gridView=self.gridView,
-                    order=6,
-                )
-            )
-            pressure_update_l2 = math_sqrt(
-                integrate(
-                    (self.p_h - self.p_prev) ** 2,
-                    gridView=self.gridView,
-                    order=4,
-                )
-            )
-            temporal_update_l2 = math_sqrt(velocity_update_l2**2 + pressure_update_l2**2)
-            # error_history.append(
-            #     (
-            #         t + self.dt.value,
-            #         velocity_l2_error,
-            #         pressure_l2_error,
-            #         temporal_update_l2,
-            #     )
-            # )
+            temporal_update_l2 = self.calculate_temporal_update()
             if steady_time is None and temporal_update_l2 < steady_tolerance:
                 steady_time = t + self.dt.value
 
             self.p_prev.assign(self.p_h)
             self.u_prev.assign(self.u_h)
             t += self.dt.value
-            
-                       
 
             if step % max(total_steps // 100, 1) == 0:
-                # Write VTK file for visualization in Paraview
                 vtkwriter()
-
-                if plot_results:
-                    fig.clf()   # clear existing figure instead of opening new windows
-
-                    self.u_h.plot(figure=(fig, 121))
-                    self.p_h.plot(figure=(fig, 122))
-
-                    fig.suptitle(f"step={step}, t={t:.4f}")
-                    fig.canvas.draw_idle()
-                    fig.canvas.flush_events()
-                    plt.pause(0.001)
+                if plot_results: self.refresh_visualization(t, fig, step)
 
             if adaptive and step % adaptStep == 0:
                 self.adapt(indicator, maxLevel, expr)
@@ -345,12 +319,9 @@ class NavierStokesSolver:
         self.u_h.plot()
         self.p_h.plot()
 
-        # final_time, final_u_error, final_p_error, final_update = error_history[-1]
-        # print(
-        #     f"Final L2 errors at "
-        #     f"t={final_time:.4f}: ||u_h-u_exact||_L2={final_u_error:.6e}, "
-        #     f"||p_h-p_exact||_L2={final_p_error:.6e}"
-        # )
+        if self.solution_provided:
+            self.print_solution_error_message(error_history)
+
         if steady_time is None:
             print(
                 f"Steady state criterion not reached: "
@@ -365,37 +336,93 @@ class NavierStokesSolver:
                 f"< {steady_tolerance:.1e}."
             )
 
-        # return {
-        #     "gridView": self.gridView,
-        #     "u_h": self.u_h,
-        #     "p_h": self.p_h,
-        #     "error_history": error_history,
-        #     "steady_time": steady_time,
-        # }
+        return error_history
 
+    def print_solution_error_message(self, error_history):
+        final_time, final_u_error, final_p_error = error_history[-1]
+        print(
+                f"Final L2 errors at "
+                f"t={final_time:.4f}: ||u_h-u_exact||_L2={final_u_error:.6e}, "
+                f"||p_h-p_exact||_L2={final_p_error:.6e}"
+            )
+
+    def initialize_visualisation(self):
+        plt.ion()
+        fig = plt.figure(figsize=(12, 5))
+        plt.show(block=False)
+        return fig
+
+    def refresh_visualization(self, t, fig, step):
+        fig.clf()  # clear existing figure instead of opening new windows
+
+        self.u_h.plot(figure=(fig, 121))
+        self.p_h.plot(figure=(fig, 122))
+
+        fig.suptitle(f"step={step}, t={t:.4f}")
+        fig.canvas.draw_idle()
+        fig.canvas.flush_events()
+        plt.pause(0.001)
+
+    def calculate_l2_errors(self):
+        velocity_l2_error = math_sqrt(
+            integrate(
+                inner(self.u_h - self.solution_u, self.u_h - self.solution_u),
+                gridView=self.gridView,
+                order=6,
+            )
+        )
+        pressure_l2_error = math_sqrt(
+            integrate(
+                (self.p_h - self.solution_p) ** 2,
+                gridView=self.gridView,
+                order=4,
+            )
+        )
+
+        return velocity_l2_error, pressure_l2_error
+
+    def calculate_temporal_update(self):
+        velocity_update_l2 = math_sqrt(
+            integrate(
+                inner(self.u_h - self.u_prev, self.u_h - self.u_prev),
+                gridView=self.gridView,
+                order=6,
+            )
+        )
+        pressure_update_l2 = math_sqrt(
+            integrate(
+                (self.p_h - self.p_prev) ** 2,
+                gridView=self.gridView,
+                order=4,
+            )
+        )
+        temporal_update_l2 = math_sqrt(velocity_update_l2**2 + pressure_update_l2**2)
+        return temporal_update_l2
 
     def create_task_A_gridview(self, STRUCTURED_CELLS):
         domain = cartesianDomain([0, 0], [self.L, self.H], STRUCTURED_CELLS)
         gridView = leafGridView(domain)
         gridView = adaptiveLeafGridView(gridView)
         self.gridView = gridView
-        print(f"Created structured grid with {gridView.size(0)} vertices and {gridView.size(1)} cells.")
-
+        print(
+            f"Created structured grid with {gridView.size(0)} vertices and {gridView.size(1)} cells."
+        )
 
     def create_task_B_gridview(self, mesh_size):
         with pygmsh.occ.Geometry() as geom:
             geom.add_rectangle([0, 0, 0], self.L, self.H, mesh_size=mesh_size)
             mesh = geom.generate_mesh()
             points, cells = mesh.points, mesh.cells_dict
-            eps = 1e-8 # tolerance
+            eps = 1e-8  # tolerance
             # dictionary containing id and a list containing the lower left and upper right corner of the bounding box
-            bndDomain = {1: [[-eps, -eps], [eps, self.H + eps]],  # left
-                        2: [[self.L - eps, -eps], [self.L + eps, self.H + eps]],  # right
-                        3: [[-eps, -eps], [self.L + eps, eps]],  # bottom
-                        4: [[-eps, self.H - eps], [self.L + eps, self.H + eps]],  # top
-                        5: "default"  # top and bottom wall,
-                        # which are all other segments not contained in the above bounding boxes
-                        }
+            bndDomain = {
+                1: [[-eps, -eps], [eps, self.H + eps]],  # left
+                2: [[self.L - eps, -eps], [self.L + eps, self.H + eps]],  # right
+                3: [[-eps, -eps], [self.L + eps, eps]],  # bottom
+                4: [[-eps, self.H - eps], [self.L + eps, self.H + eps]],  # top
+                5: "default",  # top and bottom wall,
+                # which are all other segments not contained in the above bounding boxes
+            }
 
             # return dgf string which can be read by DGF parser or written to file for later use
             dgf = mesh2DGF(points, cells, bndDomain=bndDomain, dim=2)
@@ -404,10 +431,9 @@ class NavierStokesSolver:
         gridView = adaptiveLeafGridView(gridView)
         self.gridView = gridView
 
-
     def create_karman_gridView(
         self, mesh_size, cylinder_center, cylinder_r, coarse=False
-    ):  
+    ):
         dgf = None
         if comm.rank == 0:
             outside_size = 0.08 if coarse else mesh_size
@@ -417,7 +443,9 @@ class NavierStokesSolver:
                 return min(0.01 + 0.6 * radius2, outside_size)
 
             with pygmsh.occ.Geometry() as geom:
-                geom.set_mesh_size_callback(lambda dim, tag, x, y, z, lc: local_size(x, y))
+                geom.set_mesh_size_callback(
+                    lambda dim, tag, x, y, z, lc: local_size(x, y)
+                )
                 rectangle = geom.add_rectangle([0, 0, 0], self.L, self.H)
                 cylinder = geom.add_disk(
                     [cylinder_center[0], cylinder_center[1], 0.0],
@@ -426,32 +454,33 @@ class NavierStokesSolver:
                 geom.boolean_difference(rectangle, cylinder)
                 mesh = geom.generate_mesh()
                 points, cells = mesh.points, mesh.cells_dict
-                eps = 0.01 # tolerance
+                eps = 0.01  # tolerance
                 # dictionary containing id and a list containing the lower left and upper right corner of the bounding box
-                bndDomain = {1: [[-eps, -eps], [eps, self.H + eps]],  # left
-                            2: [[self.L - eps, -eps], [self.L + eps, self.H + eps]],  # right
-                            3: [[-eps, -eps], [self.L + eps, eps]],  # bottom
-                            4: [[-eps, self.H - eps], [self.L + eps, self.H + eps]],  # top
-                            5: "default"  # hole boundary, which are all other segments not contained in the above bounding boxes
-                            }
+                bndDomain = {
+                    1: [[-eps, -eps], [eps, self.H + eps]],  # left
+                    2: [[self.L - eps, -eps], [self.L + eps, self.H + eps]],  # right
+                    3: [[-eps, -eps], [self.L + eps, eps]],  # bottom
+                    4: [[-eps, self.H - eps], [self.L + eps, self.H + eps]],  # top
+                    5: "default",  # hole boundary, which are all other segments not contained in the above bounding boxes
+                }
 
                 # return dgf string which can be read by DGF parser or written to file for later use
                 dgf = mesh2DGF(points, cells, bndDomain=bndDomain, dim=2)
-            
+
         dgf = mpi_comm.bcast(dgf, root=0)
         domain2d = (reader.dgfString, dgf)
         # fig = pyplot.figure()
         # boundaryFunction( gridView2d).plot(gridLines="white",linewidth=2,figure=fig)
         # fig.get_axes()[0].set_facecolor("lightgray")
         # visualize the grid with the boundary function plotted on top to check if the boundary conditions are correctly identified
-        
+
         gridView = leafGridView(domain2d, dimgrid=2, lbMethod=14)
         gridView = adaptiveLeafGridView(gridView)
         self.gridView = gridView
 
 
 solverParameters = {
-        "solver_1": {
+    "solver_1": {
         "nonlinear.tolerance": 1e-8,
         "nonlinear.verbose": False,
         "linear.tolerance": 1e-9,
@@ -467,13 +496,13 @@ solverParameters = {
         "linear.petsc.blockedmode": False,
         "linear.verbose": False,
         "linear.maxiterations": 1000,
-    },    
-    "solver_3":  {
+    },
+    "solver_3": {
         "nonlinear.tolerance": 1e-8,
         "nonlinear.verbose": False,
         "linear.tolerance": 1e-9,
         "linear.preconditioning.method": "oas",
         "linear.verbose": False,
         "linear.maxiterations": 1000,
-    }
+    },
 }
