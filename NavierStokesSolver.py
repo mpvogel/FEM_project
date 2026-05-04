@@ -244,12 +244,12 @@ class NavierStokesSolver:
         fvspc = finiteVolume(self.gridView, dimRange=1)
         indicator = fvspc.function(name="indicator")
 
-        # omega = grad(self.u_h[1])[0] - grad(self.u_h[0])[1]  # curl of u
-        # expr = ufl_sqrt(omega * omega)  # vorticity magnitude used as an adaptive indicator
+        omega = grad(self.u_h[1])[0] - grad(self.u_h[0])[1]  # curl of u
+        expr = ufl_sqrt(omega * omega)  # vorticity magnitude used as an adaptive indicator
 
-        omega = self.u_h[1].dx(0) - self.u_h[0].dx(1)
+        # omega = self.u_h[1].dx(0) - self.u_h[0].dx(1)
 
-        expr = ufl_sqrt(CellVolume(self.velocitySpace) * omega * omega)
+        # expr = ufl_sqrt(CellVolume(self.velocitySpace) * omega * omega)
 
         if plot_results:
             plt.ion()
