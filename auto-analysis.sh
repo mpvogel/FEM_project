@@ -7,5 +7,5 @@ for np in "${ranks[@]}"; do
     OMP_NUM_THREADS=1 \
     OPENBLAS_NUM_THREADS=1 \
     MKL_NUM_THREADS=1 \
-    mpirun -np "$np" TaskKarmanVortexStreet.py "parallel_main"
+    mpirun -np "$np" python TaskKarmanVortexStreet.py "parallel_main"
 done
