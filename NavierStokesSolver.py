@@ -245,7 +245,7 @@ class NavierStokesSolver:
         )
 
     def solve(
-        self, T=10.0, plot_results=False, adaptive=False, adaptStep=5, maxLevel=5
+        self, T=10.0, plot_results=False, adaptive=False, adaptStep=5, maxLevel=5, analysis=False
     ):
         if self.scheme_1 is None or self.scheme_2 is None or self.scheme_3 is None:
             raise ValueError("Solution schemes must be built before solving.")
@@ -283,60 +283,94 @@ class NavierStokesSolver:
         if comm.rank == 0:
             iterator = tqdm(iterator)
 
+        scheme_1_linear_iterations = np.zeros(total_steps, dtype=int)
+        scheme_2_linear_iterations = np.zeros(total_steps, dtype=int)
+        scheme_3_linear_iterations = np.zeros(total_steps, dtype=int)
+        scheme_1_convergence = np.zeros(total_steps, dtype=bool)
+        scheme_2_convergence = np.zeros(total_steps, dtype=bool)
+        scheme_3_convergence = np.zeros(total_steps, dtype=bool)
+        scheme_1_solve_time = np.zeros(total_steps)
+        scheme_2_solve_time = np.zeros(total_steps)
+        scheme_3_solve_time = np.zeros(total_steps)
+        scheme_1_assembly_time = np.zeros(total_steps)
+        scheme_2_assembly_time = np.zeros(total_steps)
+        scheme_3_assembly_time = np.zeros(total_steps)
+        scheme_1_return = None
+        scheme_2_return = None
+        scheme_3_return = None
+
+
         for step in iterator:
             t_new = step * self.dt.value
 
             if self.inflow_factor is not None:
                 self.inflow_factor.value = min(1.0, t_new / self.inflow_ramp_time)
 
-            self.scheme_1.solve(target=self.u_prelim)
-            self.scheme_2.solve(target=self.p_h)
-            self.scheme_3.solve(target=self.u_h)
+            scheme_1_results = self.scheme_1.solve(target=self.u_prelim)
+            scheme_2_results = self.scheme_2.solve(target=self.p_h)
+            scheme_3_results = self.scheme_3.solve(target=self.u_h)
+            
+            if analysis:
+                scheme_1_linear_iterations[step - 1] = scheme_1_results["linear_iterations"]
+                scheme_2_linear_iterations[step - 1] = scheme_2_results["linear_iterations"]
+                scheme_3_linear_iterations[step - 1] = scheme_3_results["linear_iterations"]
+                scheme_1_convergence[step - 1] = scheme_1_results["converged"]
+                scheme_2_convergence[step - 1] = scheme_2_results["converged"]
+                scheme_3_convergence[step - 1] = scheme_3_results["converged"]
+                scheme_1_solve_time[step - 1] = scheme_1_results["timing"][2]
+                scheme_2_solve_time[step - 1] = scheme_2_results["timing"][2]
+                scheme_3_solve_time[step - 1] = scheme_3_results["timing"][2]
+                scheme_1_assembly_time[step - 1] = scheme_1_results["timing"][1]
+                scheme_2_assembly_time[step - 1] = scheme_2_results["timing"][1]
+                scheme_3_assembly_time[step - 1] = scheme_3_results["timing"][1]
+                scheme_1_return = (scheme_1_linear_iterations, scheme_1_convergence, scheme_1_solve_time, scheme_1_assembly_time)
+                scheme_2_return = (scheme_2_linear_iterations, scheme_2_convergence, scheme_2_solve_time, scheme_2_assembly_time)
+                scheme_3_return = (scheme_3_linear_iterations, scheme_3_convergence, scheme_3_solve_time, scheme_3_assembly_time)
 
-            if self.solution_provided:
-                velocity_l2_error, pressure_l2_error = self.calculate_l2_errors()
-                error_history.append((t, velocity_l2_error, pressure_l2_error))
+                if self.solution_provided:
+                    velocity_l2_error, pressure_l2_error = self.calculate_l2_errors()
+                    error_history.append((t, velocity_l2_error, pressure_l2_error))
 
-            temporal_update_l2 = self.calculate_temporal_update()
-            if steady_time is None and temporal_update_l2 < steady_tolerance:
-                steady_time = t + self.dt.value
+                temporal_update_l2 = self.calculate_temporal_update()
+                if steady_time is None and temporal_update_l2 < steady_tolerance:
+                    steady_time = t + self.dt.value
 
             self.p_prev.assign(self.p_h)
             self.u_prev.assign(self.u_h)
             t += self.dt.value
 
-            if step % max(total_steps // 100, 1) == 0:
+            if step % max(total_steps // 100, 1) == 0 and analysis:
                 vtkwriter()
                 if plot_results: self.refresh_visualization(t, fig, step)
 
             if adaptive and step % adaptStep == 0:
                 self.adapt(indicator, maxLevel, expr)
 
-        if plot_results:
+        if plot_results and analysis:
             plt.ioff()
             plt.show()
+            self.u_h.plot()
+            self.p_h.plot()
 
-        self.u_h.plot()
-        self.p_h.plot()
+        if analysis:
+            if self.solution_provided:
+                self.print_solution_error_message(error_history)
 
-        if self.solution_provided:
-            self.print_solution_error_message(error_history)
+            if steady_time is None:
+                print(
+                    f"Steady state criterion not reached: "
+                    f"combined temporal update remained {temporal_update_l2:.6e} "
+                    f"> {steady_tolerance:.1e} at T={T}."
+                )
+            else:
+                print(
+                    f"Steady state reached at "
+                    f"t={steady_time:.4f} with criterion "
+                    f"sqrt(||u^n-u^(n-1)||_L2^2 + ||p^n-p^(n-1)||_L2^2) "
+                    f"< {steady_tolerance:.1e}."
+                )
 
-        if steady_time is None:
-            print(
-                f"Steady state criterion not reached: "
-                f"combined temporal update remained {temporal_update_l2:.6e} "
-                f"> {steady_tolerance:.1e} at T={T}."
-            )
-        else:
-            print(
-                f"Steady state reached at "
-                f"t={steady_time:.4f} with criterion "
-                f"sqrt(||u^n-u^(n-1)||_L2^2 + ||p^n-p^(n-1)||_L2^2) "
-                f"< {steady_tolerance:.1e}."
-            )
-
-        return error_history
+        return error_history, scheme_1_return, scheme_2_return, scheme_3_return
 
     def print_solution_error_message(self, error_history):
         final_time, final_u_error, final_p_error = error_history[-1]
@@ -477,32 +511,3 @@ class NavierStokesSolver:
         gridView = leafGridView(domain2d, dimgrid=2, lbMethod=14)
         gridView = adaptiveLeafGridView(gridView)
         self.gridView = gridView
-
-
-solverParameters = {
-    "solver_1": {
-        "nonlinear.tolerance": 1e-8,
-        "nonlinear.verbose": False,
-        "linear.tolerance": 1e-9,
-        "linear.preconditioning.method": "oas",
-        "linear.verbose": False,
-        "linear.maxiterations": 1000,
-    },
-    "solver_2": {
-        "nonlinear.tolerance": 1e-8,
-        "nonlinear.verbose": False,
-        "linear.tolerance": 1e-9,
-        "linear.preconditioning.method": "pcgamg",
-        "linear.petsc.blockedmode": False,
-        "linear.verbose": False,
-        "linear.maxiterations": 1000,
-    },
-    "solver_3": {
-        "nonlinear.tolerance": 1e-8,
-        "nonlinear.verbose": False,
-        "linear.tolerance": 1e-9,
-        "linear.preconditioning.method": "oas",
-        "linear.verbose": False,
-        "linear.maxiterations": 1000,
-    },
-}
