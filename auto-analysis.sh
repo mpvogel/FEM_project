@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+
 mpirun -np 1 python TaskKarmanVortexStreet.py "serial"
 
 ranks=(1 2 4 8 16 32 64)
