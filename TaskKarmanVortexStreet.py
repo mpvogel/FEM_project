@@ -251,10 +251,17 @@ if __name__ == "__main__":
             "total_runtime": runtime,
             "number of ranks": comm.Get_size(),
         }
+        results_minimal_list.append(minimal_results)
 
     if save_detailed_results:
         np.save(save_name, results_list)
 
     if comm.rank == 0:
+        previous_minimal_results_list = []
+        try:
+            previous_minimal_results_list = np.load(f"minresults_{save_name}", allow_pickle=True).tolist()
+            results_minimal_list = previous_minimal_results_list + results_minimal_list
+        except FileNotFoundError:
+            pass
         np.save(f"minresults_{save_name}", results_minimal_list)
         
