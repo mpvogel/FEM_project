@@ -245,7 +245,7 @@ class NavierStokesSolver:
         )
 
     def solve(
-        self, T=10.0, plot_results=False, adaptive=False, adaptStep=5, maxLevel=5, analysis=False
+        self, T=10.0, plot_results=False, adaptive=False, adaptStep=5, maxLevel=5, analysis=False, write_vtk=False, interactive_plot=False
     ):
         if self.scheme_1 is None or self.scheme_2 is None or self.scheme_3 is None:
             raise ValueError("Solution schemes must be built before solving.")
@@ -266,18 +266,18 @@ class NavierStokesSolver:
         # omega = self.u_h[1].dx(0) - self.u_h[0].dx(1)
         # expr = ufl_sqrt(CellVolume(self.velocitySpace) * omega * omega)
 
-        if plot_results:
+        if interactive_plot:
             fig = self.initialize_visualisation()
 
-        # init vtk writer:
-        os.makedirs("out", exist_ok=True)
-        vtk_basename = f"out/solution_dt_{self.dt.value:.4f}"
+        if write_vtk:
+            os.makedirs("out", exist_ok=True)
+            vtk_basename = f"out/solution_dt_{self.dt.value:.4f}"
 
-        vtkwriter = self.gridView.sequencedVTK(
-            vtk_basename,
-            pointdata={"velocity": self.u_h, "pressure": self.p_h},
-            subsampling=0,
-        )
+            vtkwriter = self.gridView.sequencedVTK(
+                vtk_basename,
+                pointdata={"velocity": self.u_h, "pressure": self.p_h},
+                subsampling=0,
+            )
 
         iterator = range(1, total_steps + 1)
         if comm.rank == 0:
@@ -339,16 +339,19 @@ class NavierStokesSolver:
             self.u_prev.assign(self.u_h)
             t += self.dt.value
 
-            if step % max(total_steps // 100, 1) == 0 and analysis:
-                vtkwriter()
-                if plot_results: self.refresh_visualization(t, fig, step)
+            if step % max(total_steps // 100, 1) == 0:
+                if write_vtk:
+                    vtkwriter()
+                if interactive_plot:
+                    self.refresh_visualization(t, fig, step)
 
             if adaptive and step % adaptStep == 0:
                 self.adapt(indicator, maxLevel, expr)
 
-        if plot_results and analysis:
+        if interactive_plot:
             plt.ioff()
             plt.show()
+        if plot_results:
             self.u_h.plot()
             self.p_h.plot()
 
@@ -441,6 +444,7 @@ class NavierStokesSolver:
         print(
             f"Created structured grid with {gridView.size(0)} vertices and {gridView.size(1)} cells."
         )
+        self.gridView.plot(gridLines="black")
 
     def create_task_B_gridview(self, mesh_size):
         with pygmsh.occ.Geometry() as geom:
@@ -464,6 +468,7 @@ class NavierStokesSolver:
         gridView = leafGridView(domain2d, dimgrid=2)
         gridView = adaptiveLeafGridView(gridView)
         self.gridView = gridView
+        self.gridView.plot(gridLines="black")
 
     def create_karman_gridView(
         self, mesh_size, cylinder_center, cylinder_r, coarse=False
@@ -511,3 +516,10 @@ class NavierStokesSolver:
         gridView = leafGridView(domain2d, dimgrid=2, lbMethod=14)
         gridView = adaptiveLeafGridView(gridView)
         self.gridView = gridView
+
+        # plot the grid to check if it looks correct
+        fig = plt.figure(figsize=(8, 4))
+        self.gridView.plot(gridLines="black", figure=fig)
+        # fig.get_axes()[0].set_facecolor("lightgray")
+        fig.suptitle("Grid visualization")
+        plt.show()
