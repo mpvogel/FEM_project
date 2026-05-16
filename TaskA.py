@@ -35,7 +35,7 @@ solverParameters = {
 }
 
 if __name__ == "__main__":
-    solver = NavierStokesSolver(dt_value=DT, H=H, L=L, mu_value= 1, rho_value = 1)
+    solver = NavierStokesSolver(dt_value=DT, H=H, L=L, mu_value=1, rho_value=1)
     solver.create_task_A_gridview(STRUCTURED_CELLS)
     solver.buildForms()
     solver.buildPoiseuilleFlowBC()
@@ -44,4 +44,4 @@ if __name__ == "__main__":
         solverParameters, solver_types=[(solver_lib, "gmres"), (solver_lib, "cg"), (solver_lib, "cg")]
     )
     solver.buildSolutionsPoiseuille()
-    results = solver.solve(T=T, plot_results=True)
+    results = solver.solve(T=T, plot_results=True, analysis=True, interactive_plot=True)
