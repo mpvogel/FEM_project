@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-mpirun -np 1 python TaskKarmanVortexStreet.py "serial"
+mpirun -np 1 python KVS_analysis.py "serial"
 
 ranks=(1 2 4 8 16 32 64)
 
@@ -9,5 +9,5 @@ for np in "${ranks[@]}"; do
     OMP_NUM_THREADS=1 \
     OPENBLAS_NUM_THREADS=1 \
     MKL_NUM_THREADS=1 \
-    mpirun -np "$np" python TaskKarmanVortexStreet.py "parallel_main"
+    mpirun -np "$np" python KVS_analysis.py "parallel_main"
 done
