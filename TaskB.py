@@ -1,5 +1,8 @@
 from NavierStokesSolver import NavierStokesSolver
 from TaskA import L, H, T, DT, solver_lib
+from dune.fem import threading
+
+threading.useMax()
 
 UNSTRUCTURED_MESH_SIZE = 0.08
 solverParameters = {

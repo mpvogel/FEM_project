@@ -1,4 +1,7 @@
 from NavierStokesSolver import NavierStokesSolver
+from dune.fem import threading
+
+threading.useMax()
 
 L = 1.0
 H = 1.0

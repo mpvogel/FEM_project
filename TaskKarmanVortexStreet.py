@@ -1,7 +1,11 @@
 from NavierStokesSolver import NavierStokesSolver
 from mpi4py import MPI
+from dune.fem import threading
+import numpy as np
 
 comm = MPI.COMM_WORLD
+threading.useMax()
+# threading.use = 1
 L = 2.2
 H = 0.41
 CYLINDER_CENTER = (0.2, 0.2)
@@ -27,7 +31,7 @@ solverParameters = {
         "linear.preconditioning.method": "none",
         "linear.petsc.blockedmode": False,
         "linear.verbose": False,
-        "linear.maxiterations": 1000,
+        "linear.maxiterations": 10000,
     },
     "solver_3": {
         "nonlinear.tolerance": 1e-8,

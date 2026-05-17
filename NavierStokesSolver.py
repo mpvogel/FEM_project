@@ -40,7 +40,7 @@ mpi_comm = MPI.COMM_WORLD
 rank = mpi_comm.Get_rank()
 
 # fem.threading.useMax()
-threading.use = 1
+# threading.use = 1
 
 if comm.rank == 0:
     print("Running on master process.")
@@ -87,6 +87,10 @@ class NavierStokesSolver:
             self.gridView, order=2, dimRange=dim, storage="petsc"
         )
         self.pressureSpace = lagrange(self.gridView, order=1, storage="petsc")
+
+        # verbose info
+        print(f"Velocity space has {self.velocitySpace.size} degrees of freedom.")
+        print(f"Pressure space has {self.pressureSpace.size} degrees of freedom.")
 
         u = TrialFunction(self.velocitySpace)
         v = TestFunction(self.velocitySpace)
@@ -309,6 +313,13 @@ class NavierStokesSolver:
             scheme_1_results = self.scheme_1.solve(target=self.u_prelim)
             scheme_2_results = self.scheme_2.solve(target=self.p_h)
             scheme_3_results = self.scheme_3.solve(target=self.u_h)
+
+            if not scheme_1_results["converged"]:
+                print(f"Warning: Scheme 1 did not converge at step {step}, t={t_new:.4f}.")
+            if not scheme_2_results["converged"]:
+                print(f"Warning: Scheme 2 did not converge at step {step}, t={t_new:.4f}.")
+            if not scheme_3_results["converged"]:
+                print(f"Warning: Scheme 3 did not converge at step {step}, t={t_new:.4f}.")
             
             if analysis:
                 scheme_1_linear_iterations[step - 1] = scheme_1_results["linear_iterations"]
@@ -323,9 +334,6 @@ class NavierStokesSolver:
                 scheme_1_assembly_time[step - 1] = scheme_1_results["timing"][1]
                 scheme_2_assembly_time[step - 1] = scheme_2_results["timing"][1]
                 scheme_3_assembly_time[step - 1] = scheme_3_results["timing"][1]
-                scheme_1_return = (scheme_1_linear_iterations, scheme_1_convergence, scheme_1_solve_time, scheme_1_assembly_time)
-                scheme_2_return = (scheme_2_linear_iterations, scheme_2_convergence, scheme_2_solve_time, scheme_2_assembly_time)
-                scheme_3_return = (scheme_3_linear_iterations, scheme_3_convergence, scheme_3_solve_time, scheme_3_assembly_time)
 
                 if self.solution_provided:
                     velocity_l2_error, pressure_l2_error = self.calculate_l2_errors()
@@ -356,6 +364,10 @@ class NavierStokesSolver:
             self.p_h.plot()
 
         if analysis:
+            scheme_1_return = (scheme_1_linear_iterations, scheme_1_convergence, scheme_1_solve_time, scheme_1_assembly_time)
+            scheme_2_return = (scheme_2_linear_iterations, scheme_2_convergence, scheme_2_solve_time, scheme_2_assembly_time)
+            scheme_3_return = (scheme_3_linear_iterations, scheme_3_convergence, scheme_3_solve_time, scheme_3_assembly_time)
+
             if self.solution_provided:
                 self.print_solution_error_message(error_history)
 
@@ -442,7 +454,7 @@ class NavierStokesSolver:
         gridView = adaptiveLeafGridView(gridView)
         self.gridView = gridView
         print(
-            f"Created structured grid with {gridView.size(0)} vertices and {gridView.size(1)} cells."
+            f"Created structured grid with {gridView.size(0)} elements"
         )
         self.gridView.plot(gridLines="black")
 
@@ -469,6 +481,8 @@ class NavierStokesSolver:
         gridView = adaptiveLeafGridView(gridView)
         self.gridView = gridView
         self.gridView.plot(gridLines="black")
+
+        print(f"number of elements in unstructured grid: {gridView.size(0)}")
 
     def create_karman_gridView(
         self, mesh_size, cylinder_center, cylinder_r, coarse=False
@@ -516,6 +530,11 @@ class NavierStokesSolver:
         gridView = leafGridView(domain2d, dimgrid=2, lbMethod=14)
         gridView = adaptiveLeafGridView(gridView)
         self.gridView = gridView
+
+        # verbose info
+        print(
+            f"Created grid with {gridView.size(0)} elements."
+        )
 
         # plot the grid to check if it looks correct
         fig = plt.figure(figsize=(8, 4))
